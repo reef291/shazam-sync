@@ -161,6 +161,11 @@
     זה חינמי, לא דורש חשבון מפתח, רק מנוי צפייה רגיל אם יש לך.)
   </p>
   <textarea id="songInput" placeholder="Blinding Lights - The Weeknd&#10;As It Was - Harry Styles&#10;Flowers - Miley Cyrus"></textarea>
+
+  <label style="margin-top:14px;">או העלה/י צילומי מסך מ-Shazam (My Shazam) - יזהה טקסט אוטומטית לתוך התיבה למעלה</label>
+  <input type="file" id="imageInput" accept="image/*" multiple />
+  <small class="hint">זיהוי הטקסט רץ בדפדפן שלך (Tesseract.js), לא נשלח לשום שרת. הכלי מניח ששורה ראשונה = שם שיר ושורה שנייה = אמן (כמו שזה מופיע ב-Shazam) - אם יש בצילום גם כותרות/תאריכים זה עלול לבלבל את הזיווג, אז כדאי לעבור מהר על התוצאה ולתקן לפני "טען שירים".</small>
+
   <div style="margin-top:12px;">
     <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
   </div>
@@ -216,6 +221,60 @@ async function mapWithConcurrency(items, limit, worker) {
   if (saved) $(id).value = saved;
   $(id).addEventListener("change", () => LS.set("field_" + id, $(id).value));
 });
+
+// ---------- OCR (screenshot -> text) ----------
+let tesseractLoadPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("נכשלה טעינת מנוע ה-OCR"));
+    document.head.appendChild(s);
+  });
+  return tesseractLoadPromise;
+}
+
+async function handleImageUpload(e) {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  $("imageInput").disabled = true;
+  try {
+    busy("טוען מנוע זיהוי טקסט...");
+    await loadTesseract();
+    const worker = await Tesseract.createWorker("eng");
+    const chunks = [];
+    for (let i = 0; i < files.length; i++) {
+      busy(`מזהה טקסט מתמונה ${i + 1} מתוך ${files.length}...`);
+      const { data: { text } } = await worker.recognize(files[i]);
+      chunks.push(text);
+      log(`זוהה טקסט מתמונה ${i + 1}/${files.length}.`);
+    }
+    await worker.terminate();
+
+    // Shazam's list shows title then artist as two separate lines per song -
+    // pair up consecutive recognized lines into "title - artist" format.
+    const rawLines = chunks.join("\n").split("\n").map((l) => l.trim()).filter(Boolean);
+    const paired = [];
+    for (let i = 0; i < rawLines.length; i += 2) {
+      paired.push(rawLines[i + 1] ? `${rawLines[i]} - ${rawLines[i + 1]}` : rawLines[i]);
+    }
+    const extracted = paired.join("\n");
+    const existing = $("songInput").value.trim();
+    $("songInput").value = existing ? existing + "\n" + extracted : extracted;
+    LS.set("field_songInput", $("songInput").value);
+    log('הטקסט נוסף לתיבה למעלה - כדאי לבדוק ולתקן (למשל למחוק שורות מיותרות) לפני "טען שירים".');
+  } catch (err) {
+    log("שגיאה בזיהוי טקסט מהתמונה: " + err.message);
+  } finally {
+    busy(null);
+    $("imageInput").disabled = false;
+    $("imageInput").value = "";
+  }
+}
+$("imageInput").addEventListener("change", handleImageUpload);
 
 // ---------- base64url helpers ----------
 function b64url(bytes) {
