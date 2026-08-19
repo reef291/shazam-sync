@@ -88,6 +88,14 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  #dropZone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 20px 14px; text-align: center;
+    color: var(--muted); font-size: 0.85rem; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #dropZone:hover, #dropZone:focus { border-color: var(--accent); outline: none; }
+  #dropZone.dragover { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, transparent); }
+  .dropzone-link { color: var(--accent); text-decoration: underline; }
+
   #songList { margin-top: 12px; }
   .song-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -162,9 +170,12 @@
   </p>
   <textarea id="songInput" placeholder="Blinding Lights - The Weeknd&#10;As It Was - Harry Styles&#10;Flowers - Miley Cyrus"></textarea>
 
-  <label style="margin-top:14px;">או העלה/י צילומי מסך מ-Shazam (My Shazam) - יזהה טקסט אוטומטית לתוך התיבה למעלה</label>
-  <input type="file" id="imageInput" accept="image/*" multiple />
-  <small class="hint">זיהוי הטקסט רץ בדפדפן שלך (Tesseract.js), לא נשלח לשום שרת. הכלי מניח ששורה ראשונה = שם שיר ושורה שנייה = אמן (כמו שזה מופיע ב-Shazam) - אם יש בצילום גם כותרות/תאריכים זה עלול לבלבל את הזיווג, אז כדאי לעבור מהר על התוצאה ולתקן לפני "טען שירים".</small>
+  <label style="margin-top:14px;">או צילומי מסך מ-Shazam (My Shazam) - יזהה טקסט אוטומטית לתוך התיבה למעלה</label>
+  <div id="dropZone" tabindex="0">
+    <span id="dropZoneText">גררו תמונות לכאן, הדביקו עם Ctrl+V, או <span class="dropzone-link">בחרו קובץ</span></span>
+    <input type="file" id="imageInput" accept="image/*" multiple style="display:none;" />
+  </div>
+  <small class="hint">זיהוי הטקסט רץ בדפדפן שלך (Tesseract.js), לא נשלח לשום שרת. הכלי מנסה לסנן כותרות/תאריכים ולזווג שורה ראשונה = שם שיר, שורה שנייה = אמן - זה לא מושלם, כדאי לעבור מהר על התוצאה ולתקן לפני "טען שירים". אם רוצים דיוק גבוה יותר, אפשר גם פשוט לשלוח לי את הצילום בצ'אט ואני אקריא אותו ידנית.</small>
 
   <div style="margin-top:12px;">
     <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
@@ -237,8 +248,21 @@ function loadTesseract() {
   return tesseractLoadPromise;
 }
 
-async function handleImageUpload(e) {
-  const files = Array.from(e.target.files || []);
+// Lines that are almost certainly UI chrome / dates / times, not song data.
+const NOISE_LINE_PATTERNS = [
+  /^\d{1,2}:\d{2}\s*(am|pm)?$/i,
+  /^(sun|mon|tue|wed|thu|fri|sat)(day)?$/i,
+  /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(\s+\d{1,2})?(,?\s*\d{4})?$/i,
+  /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/,
+  /^(today|yesterday|this week|last week|this month)$/i,
+  /^(my shazam|shazam|discover|charts|library|search|recently added|sort|edit|home|for you|explore)$/i,
+  /^.{1,2}$/, // 1-2 char noise, usually icons misread
+];
+function isNoiseLine(line) {
+  return NOISE_LINE_PATTERNS.some((re) => re.test(line));
+}
+
+async function processImageFiles(files) {
   if (!files.length) return;
   $("imageInput").disabled = true;
   try {
@@ -255,8 +279,8 @@ async function handleImageUpload(e) {
     await worker.terminate();
 
     // Shazam's list shows title then artist as two separate lines per song -
-    // pair up consecutive recognized lines into "title - artist" format.
-    const rawLines = chunks.join("\n").split("\n").map((l) => l.trim()).filter(Boolean);
+    // drop obvious UI/date noise, then pair up consecutive remaining lines into "title - artist".
+    const rawLines = chunks.join("\n").split("\n").map((l) => l.trim()).filter(Boolean).filter((l) => !isNoiseLine(l));
     const paired = [];
     for (let i = 0; i < rawLines.length; i += 2) {
       paired.push(rawLines[i + 1] ? `${rawLines[i]} - ${rawLines[i + 1]}` : rawLines[i]);
@@ -274,7 +298,29 @@ async function handleImageUpload(e) {
     $("imageInput").value = "";
   }
 }
-$("imageInput").addEventListener("change", handleImageUpload);
+
+// ---------- drop zone: click / file picker / drag&drop / paste ----------
+const dropZone = $("dropZone");
+dropZone.addEventListener("click", () => $("imageInput").click());
+dropZone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("imageInput").click(); } });
+$("imageInput").addEventListener("change", (e) => processImageFiles(Array.from(e.target.files || [])));
+
+["dragenter", "dragover"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+});
+["dragleave", "drop"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); });
+});
+dropZone.addEventListener("drop", (e) => {
+  const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type.startsWith("image/"));
+  if (files.length) processImageFiles(files);
+});
+
+window.addEventListener("paste", (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const files = items.filter((it) => it.kind === "file" && it.type.startsWith("image/")).map((it) => it.getAsFile());
+  if (files.length) processImageFiles(files);
+});
 
 // ---------- base64url helpers ----------
 function b64url(bytes) {
