@@ -95,7 +95,19 @@
 </section>
 
 <section>
-  <h2>3. סנכרון</h2>
+  <h2>3. בדיקה ידנית של שיר בודד (עד שיתחבר Apple Music)</h2>
+  <p style="font-size:0.8rem; color:var(--muted); margin-top:-4px;">מחפש שיר ספציפי ב-Spotify ובודק אם הוא כבר קיים אצלך - בלי לגעת ב-Apple Music.</p>
+  <div class="row">
+    <div><label>שם השיר</label><input type="text" id="manualSongName" /></div>
+    <div><label>אמן</label><input type="text" id="manualSongArtist" /></div>
+  </div>
+  <div style="margin-top:12px;">
+    <button id="btnManualSearch">חפש שיר</button>
+  </div>
+</section>
+
+<section>
+  <h2>4. סנכרון מ-Shazam</h2>
   <p style="font-size:0.8rem; color:var(--muted); margin-top:-4px;">בדיקה בלבד — שום דבר לא נוסף עד שתאשר/י את הרשימה.</p>
   <button id="btnSync" disabled>בדוק שירים חדשים</button>
   <button id="btnResetState" class="secondary">אפס היסטוריית סנכרון</button>
@@ -464,6 +476,38 @@ function renderPreviewList() {
   $("btnConfirmAdd").textContent = `אשר והוסף ${previewCandidates.length} שירים ל-Spotify`;
 }
 
+async function runManualSearch() {
+  const name = $("manualSongName").value.trim();
+  const artist = $("manualSongArtist").value.trim();
+  if (!name || !artist) { log("צריך למלא שם שיר ואמן."); return; }
+  if (!LS.get("spotify_token", null)) { log("צריך להתחבר קודם ל-Spotify."); return; }
+
+  $("btnManualSearch").disabled = true;
+  previewCandidates = [];
+  previewAllAppleIds = [];
+  try {
+    log(`מחפש "${name} - ${artist}" ב-Spotify...`);
+    const uri = await findSpotifyTrackUri(name, artist, null);
+    if (!uri) { log("לא נמצא ב-Spotify."); renderPreviewList(); return; }
+
+    log("בודק אם הוא כבר קיים באחד הפלייליסטים או ב-Liked Songs שלך...");
+    const existingUris = await getSpotifyExistingUris();
+    if (existingUris.has(uri)) {
+      log("השיר כבר קיים אצלך ב-Spotify, לא נוסף לרשימה.");
+      renderPreviewList();
+      return;
+    }
+
+    previewCandidates.push({ appleId: null, name, artist, uri });
+    log("נמצא ולא קיים אצלך - הוסף לרשימה למטה לאישור.");
+    renderPreviewList();
+  } catch (e) {
+    log("שגיאה בחיפוש: " + e.message);
+  } finally {
+    $("btnManualSearch").disabled = false;
+  }
+}
+
 async function runPreview() {
   $("btnSync").disabled = true;
   $("previewList").style.display = "none";
@@ -576,6 +620,7 @@ $("btnGenAppleToken").addEventListener("click", generateAppleDeveloperToken);
 $("btnConnectApple").addEventListener("click", connectAppleMusic);
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
 $("btnSync").addEventListener("click", runPreview);
+$("btnManualSearch").addEventListener("click", runManualSearch);
 $("btnConfirmAdd").addEventListener("click", confirmAdd);
 $("btnResetState").addEventListener("click", () => { LS.del("synced_ids"); log("היסטוריית הסנכרון אופסה."); });
 
