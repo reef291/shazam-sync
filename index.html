@@ -20,24 +20,24 @@
   * { box-sizing: border-box; }
   body {
     background: var(--bg); color: var(--text); font-family: system-ui, "Segoe UI", sans-serif;
-    max-width: 720px; margin: 0 auto; padding: 24px 16px 64px;
+    max-width: 640px; margin: 0 auto; padding: 24px 16px 64px;
   }
   h1 { font-size: 1.5rem; margin: 0 0 4px; letter-spacing: -0.02em; }
   p.sub { color: var(--muted); margin: 0 0 20px; font-size: 0.92rem; line-height: 1.5; }
 
   .flow {
-    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    display: flex; align-items: center; justify-content: center; gap: 16px;
     background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    padding: 18px 12px; margin-bottom: 20px; box-shadow: var(--shadow);
+    padding: 16px; margin-bottom: 20px; box-shadow: var(--shadow);
   }
-  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 6px; }
   .flow-icon {
     width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
     font-size: 1.3rem; background: var(--pill-bg); border: 2px solid var(--border);
   }
   .flow-icon.on { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 15%, var(--pill-bg)); }
   .flow-label { font-size: 0.72rem; color: var(--muted); text-align: center; white-space: nowrap; }
-  .flow-arrow { color: var(--border); font-size: 1.1rem; flex-shrink: 0; }
+  .flow-arrow { color: var(--border); font-size: 1.3rem; }
 
   section {
     background: var(--card); border: 1px solid var(--border); border-radius: 14px;
@@ -54,15 +54,16 @@
     white-space: nowrap;
   }
   .pill.on { background: color-mix(in srgb, var(--accent2) 20%, transparent); color: var(--accent2); font-weight: 600; }
-  .section-sub { font-size: 0.8rem; color: var(--muted); margin: 4px 0 14px; line-height: 1.4; }
+  .section-sub { font-size: 0.8rem; color: var(--muted); margin: 4px 0 14px; line-height: 1.45; }
+  .section-sub b { color: var(--text); }
 
   label { display: block; font-size: 0.82rem; color: var(--muted); margin: 10px 0 4px; }
-  input[type=text], input[type=password], textarea {
+  input[type=text], textarea {
     width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); font-size: 0.9rem; font-family: inherit;
   }
   input:focus, textarea:focus { outline: none; border-color: var(--accent); }
-  textarea { min-height: 90px; font-family: ui-monospace, monospace; font-size: 0.78rem; resize: vertical; }
+  textarea { min-height: 130px; font-size: 0.86rem; resize: vertical; line-height: 1.5; }
 
   button {
     background: var(--accent); color: white; border: none; border-radius: 9px;
@@ -74,8 +75,6 @@
   button.primary-big { background: var(--accent2); color: #06280f; padding: 13px 22px; font-size: 0.95rem; }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
-  .row > div { flex: 1; min-width: 180px; }
   small.hint { color: var(--muted); display: block; margin-top: 4px; font-size: 0.74rem; }
 
   .busy {
@@ -105,7 +104,7 @@
 
   #log {
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
-    height: 160px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.76rem;
+    height: 140px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.76rem;
     white-space: pre-wrap; margin-top: 14px;
   }
 
@@ -118,17 +117,12 @@
 <body>
 
 <h1>Shazam Sync</h1>
-<p class="sub">מציג את השירים שתייגת ב-Shazam ונותן להוסיף כל אחד ל-Liked Songs שלך ב-Spotify בלחיצה אחת.</p>
+<p class="sub">מדביקים את רשימת השירים שתויגו ב-Shazam, ולכל שיר יש כפתור הוספה משלו ל-Liked Songs ב-Spotify.</p>
 
 <div class="flow">
   <div class="flow-step">
-    <div class="flow-icon">🎵</div>
-    <div class="flow-label">Shazam</div>
-  </div>
-  <div class="flow-arrow">←</div>
-  <div class="flow-step">
-    <div class="flow-icon" id="flowIconApple"></div>
-    <div class="flow-label">Apple Music</div>
+    <div class="flow-icon on">📝</div>
+    <div class="flow-label">רשימת Shazam</div>
   </div>
   <div class="flow-arrow">←</div>
   <div class="flow-step">
@@ -142,32 +136,6 @@
   <summary>
     <div class="section-head">
       <span class="step-num">1</span>
-      <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> Apple Music <span style="font-weight:400; color:var(--muted); font-size:0.8rem;">(מקור - חובה)</span></h2>
-      <span class="pill" id="pillApple">לא מחובר</span>
-    </div>
-  </summary>
-  <p class="section-sub">דורש חשבון Apple Developer בתשלום (developer.apple.com) עם MusicKit key. משמש רק כדי לקרוא את השירים - לא נכתב אליו כלום.</p>
-  <div class="row">
-    <div><label>Team ID</label><input type="text" id="appleTeamId" /></div>
-    <div><label>Key ID</label><input type="text" id="appleKeyId" /></div>
-  </div>
-  <label>תוכן קובץ ה-.p8 (יוצא מהזיכרון מיד אחרי יצירת הטוקן, לא נשמר)</label>
-  <textarea id="applePrivateKey" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
-  <label>שם פלייליסט Shazam בספריית Apple Music</label>
-  <input type="text" id="applePlaylistName" value="Shazam Library" />
-  <div style="margin-top:12px;">
-    <button id="btnGenAppleToken">צור Developer Token</button>
-    <button id="btnConnectApple" class="secondary">התחבר ל-Apple Music</button>
-  </div>
-  <small class="hint" id="txtAppleToken">אין developer token</small>
-  </details>
-</section>
-
-<section>
-  <details open>
-  <summary>
-    <div class="section-head">
-      <span class="step-num">2</span>
       <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> Spotify</h2>
       <span class="pill" id="pillSpotify">לא מחובר</span>
     </div>
@@ -184,11 +152,18 @@
 
 <section>
   <div class="section-head">
-    <span class="step-num">3</span>
+    <span class="step-num">2</span>
     <h2>השירים שתייגת ב-Shazam</h2>
   </div>
-  <p class="section-sub">כל שיר מוצג עם כפתור הוספה משלו - לוחצים ומוסיפים אותו ל-Liked Songs ב-Spotify. שום דבר לא נוסף בלי לחיצה מפורשת.</p>
-  <button id="btnLoad" class="primary-big" disabled>הצג שירים מ-Shazam</button>
+  <p class="section-sub">
+    פתח/י את אפליקציית Shazam בטלפון ← <b>My Shazam</b> (הספרייה שלך), והקלידו/העתיקו לכאן שורה לכל שיר,
+    בפורמט <b>שם השיר - אמן</b>. (אם יש לך גם Apple Music מסונכרן עם Shazam, אפשר גם להעתיק את השמות משם -
+    זה חינמי, לא דורש חשבון מפתח, רק מנוי צפייה רגיל אם יש לך.)
+  </p>
+  <textarea id="songInput" placeholder="Blinding Lights - The Weeknd&#10;As It Was - Harry Styles&#10;Flowers - Miley Cyrus"></textarea>
+  <div style="margin-top:12px;">
+    <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
+  </div>
   <small class="hint" id="loadHint"></small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
@@ -197,7 +172,6 @@
   <div id="log"></div>
 </section>
 
-<script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
 <script>
 "use strict";
 
@@ -237,7 +211,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 // ---------- persisted settings ----------
-["appleTeamId", "appleKeyId", "applePlaylistName", "spotifyClientId"].forEach((id) => {
+["spotifyClientId", "songInput"].forEach((id) => {
   const saved = LS.get("field_" + id, "");
   if (saved) $(id).value = saved;
   $(id).addEventListener("change", () => LS.set("field_" + id, $(id).value));
@@ -250,117 +224,7 @@ function b64url(bytes) {
   for (const b of arr) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function b64urlFromString(str) { return b64url(new TextEncoder().encode(str)); }
 async function sha256(str) { return crypto.subtle.digest("SHA-256", new TextEncoder().encode(str)); }
-
-// ================= Apple Music =================
-function updateAppleUi() {
-  const tok = LS.get("apple_dev_token", null);
-  const hasToken = tok && tok.expiresAt > Date.now();
-  $("txtAppleToken").textContent = hasToken
-    ? "developer token בתוקף עד " + new Date(tok.expiresAt).toLocaleDateString("he-IL")
-    : "אין developer token";
-
-  const userToken = LS.get("apple_user_token", null);
-  const connected = !!userToken;
-  $("pillApple").textContent = connected ? "מחובר" : "לא מחובר";
-  $("pillApple").className = "pill" + (connected ? " on" : "");
-  $("flowIconApple").className = "flow-icon" + (connected ? " on" : "");
-  $("flowIconApple").textContent = connected ? "✓" : "🍎";
-
-  updateLoadButton();
-}
-
-async function importEcPrivateKey(pem) {
-  const clean = pem.replace(/-----BEGIN PRIVATE KEY-----/, "")
-                    .replace(/-----END PRIVATE KEY-----/, "")
-                    .replace(/\s+/g, "");
-  const der = Uint8Array.from(atob(clean), (c) => c.charCodeAt(0));
-  return crypto.subtle.importKey("pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
-}
-
-async function generateAppleDeveloperToken() {
-  const teamId = $("appleTeamId").value.trim();
-  const keyId = $("appleKeyId").value.trim();
-  const pem = $("applePrivateKey").value.trim();
-  if (!teamId || !keyId || !pem) { log("חסרים Team ID / Key ID / private key."); return; }
-
-  try {
-    const key = await importEcPrivateKey(pem);
-    const now = Math.floor(Date.now() / 1000);
-    const lifetime = 15777000; // ~6 months, Apple's max
-    const header = { alg: "ES256", kid: keyId };
-    const payload = { iss: teamId, iat: now, exp: now + lifetime };
-    const signingInput = b64urlFromString(JSON.stringify(header)) + "." + b64urlFromString(JSON.stringify(payload));
-    const sig = await crypto.subtle.sign(
-      { name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signingInput)
-    );
-    const jwt = signingInput + "." + b64url(sig);
-    LS.set("apple_dev_token", { token: jwt, expiresAt: Date.now() + lifetime * 1000 });
-    $("applePrivateKey").value = "";
-    log("Developer token נוצר בהצלחה (בתוקף ל-6 חודשים).");
-  } catch (e) {
-    log("שגיאה ביצירת developer token: " + e.message);
-  } finally {
-    updateAppleUi();
-  }
-}
-
-let musicKitInstance = null;
-async function connectAppleMusic() {
-  const tok = LS.get("apple_dev_token", null);
-  if (!tok || tok.expiresAt <= Date.now()) { log("צור קודם developer token."); return; }
-  try {
-    await MusicKit.configure({ developerToken: tok.token, app: { name: "Shazam Sync", build: "1.0.0" } });
-    musicKitInstance = MusicKit.getInstance();
-    const userToken = await musicKitInstance.authorize();
-    LS.set("apple_user_token", userToken);
-    log("התחברת ל-Apple Music בהצלחה.");
-  } catch (e) {
-    log("שגיאה בהתחברות ל-Apple Music: " + e.message);
-  } finally {
-    updateAppleUi();
-  }
-}
-
-function getMusicKit() {
-  if (!musicKitInstance) musicKitInstance = MusicKit.getInstance();
-  return musicKitInstance;
-}
-
-async function appleFetchAll(path, params) {
-  const music = getMusicKit();
-  let results = [];
-  let nextPath = path;
-  let query = params;
-  while (nextPath) {
-    const res = await music.api.music(nextPath, query);
-    const data = res.data;
-    results = results.concat(data.data || []);
-    nextPath = data.next || null;
-    query = undefined;
-  }
-  return results;
-}
-
-async function findShazamPlaylistId(name) {
-  const playlists = await appleFetchAll("/v1/me/library/playlists", { limit: 100 });
-  const match = playlists.find((p) => p.attributes.name.trim().toLowerCase() === name.trim().toLowerCase());
-  return match ? match.id : null;
-}
-
-async function getPlaylistTracks(playlistId) {
-  const items = await appleFetchAll(`/v1/me/library/playlists/${playlistId}/tracks`, { limit: 100, include: "catalog" });
-  return items.map((item) => {
-    const attrs = item.attributes;
-    let isrc = attrs.isrc || null;
-    if (!isrc) {
-      const catalog = item.relationships && item.relationships.catalog && item.relationships.catalog.data;
-      if (catalog && catalog.length) isrc = catalog[0].attributes && catalog[0].attributes.isrc;
-    }
-    return { id: item.id, name: attrs.name || "", artist: attrs.artistName || "", isrc: isrc || null };
-  });
-}
 
 // ================= Spotify (PKCE) =================
 const SPOTIFY_SCOPE = "user-library-modify user-library-read user-read-private";
@@ -477,15 +341,13 @@ function similarity(a, b) {
   return (2 * overlap) / (ba.length + bb.length);
 }
 function isGoodMatch(name, artist, cName, cArtist, threshold = 0.72) {
-  return similarity(name, cName) >= threshold && similarity(artist, cArtist) >= threshold;
+  const nameOk = similarity(name, cName) >= threshold;
+  if (!artist) return nameOk;
+  return nameOk && similarity(artist, cArtist) >= threshold;
 }
 
-async function findSpotifyTrackUri(name, artist, isrc) {
-  if (isrc) {
-    const res = await spotifyApi(`/search?q=${encodeURIComponent("isrc:" + isrc)}&type=track&limit=1`);
-    if (res.tracks.items.length) return res.tracks.items[0].uri;
-  }
-  const q = `track:${name} artist:${artist}`;
+async function findSpotifyTrackUri(name, artist) {
+  const q = artist ? `track:${name} artist:${artist}` : `track:${name}`;
   const res = await spotifyApi(`/search?q=${encodeURIComponent(q)}&type=track&limit=5`);
   for (const item of res.tracks.items) {
     const candidateArtist = item.artists[0] ? item.artists[0].name : "";
@@ -506,22 +368,28 @@ async function getLikedSongUris() {
   return uris;
 }
 
-// ================= Load & render song list =================
-function updateLoadButton() {
-  const appleReady = !!LS.get("apple_user_token", null);
-  const spotifyReady = !!LS.get("spotify_token", null);
-  $("btnLoad").disabled = !(appleReady && spotifyReady);
-  $("loadHint").textContent = !appleReady
-    ? "מנוטרל עד שתתחבר/י ל-Apple Music למעלה (זה המקור לרשימת השירים מ-Shazam)."
-    : (!spotifyReady ? "מנוטרל עד שתתחבר/י ל-Spotify למעלה." : "");
+// ---------- parsing the pasted song list ----------
+function parseSongList(text) {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+    const m = line.match(/^(.*?)\s+[-–—]\s+(.*)$/);
+    if (m) return { name: m[1].trim(), artist: m[2].trim() };
+    return { name: line, artist: "" };
+  });
 }
 
-let songs = []; // { appleId, name, artist, isrc, uri, inLiked }
+// ================= Load & render song list =================
+function updateLoadButton() {
+  const spotifyReady = !!LS.get("spotify_token", null);
+  $("btnLoad").disabled = !spotifyReady;
+  $("loadHint").textContent = !spotifyReady ? "מנוטרל עד שתתחבר/י ל-Spotify למעלה." : "";
+}
+
+let songs = []; // { name, artist, uri, inLiked }
 
 function renderSongList() {
   const el = $("songList");
   if (!songs.length) {
-    el.innerHTML = `<div class="empty-note">אין שירים חדשים להצגה. לחצו "הצג שירים מ-Shazam" כדי לרענן.</div>`;
+    el.innerHTML = `<div class="empty-note">אין שירים להצגה. הדביקו רשימה למעלה ולחצו "טען שירים".</div>`;
     return;
   }
   el.innerHTML = songs.map((s, i) => {
@@ -557,38 +425,29 @@ async function addOneSong(idx) {
   }
 }
 
-async function loadShazamSongs() {
+async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
   renderSongList();
   try {
-    const playlistName = $("applePlaylistName").value.trim() || "Shazam Library";
-    busy(`מחפש פלייליסט "${playlistName}" ב-Apple Music...`);
-    log("מחפש פלייליסט: " + playlistName);
-    const playlistId = await findShazamPlaylistId(playlistName);
-    if (!playlistId) {
-      log(`לא נמצאה פלייליסט בשם "${playlistName}" בספריית Apple Music שלך. ודא ש-Sync Library דלוק ב-Shazam.`);
-      return;
-    }
-
-    const tracks = await getPlaylistTracks(playlistId);
-    if (!tracks.length) { log("הפלייליסט ריק - אין עדיין שירים מתויגים."); return; }
-    log(`נמצאו ${tracks.length} שירים ב-Shazam. בודק מול Spotify...`);
+    const entries = parseSongList($("songInput").value);
+    if (!entries.length) { log("הדבק/י לפחות שורה אחת עם שם שיר."); return; }
+    log(`נמצאו ${entries.length} שורות. בודק מול Spotify...`);
 
     const likedUris = await getLikedSongUris();
 
     let completed = 0;
-    const results = new Array(tracks.length);
-    await mapWithConcurrency(tracks, 5, async (track, i) => {
+    const results = new Array(entries.length);
+    await mapWithConcurrency(entries, 5, async (entry, i) => {
       try {
-        const uri = await findSpotifyTrackUri(track.name, track.artist, track.isrc);
-        results[i] = { appleId: track.id, name: track.name, artist: track.artist, uri, inLiked: uri ? likedUris.has(uri) : false };
+        const uri = await findSpotifyTrackUri(entry.name, entry.artist);
+        results[i] = { name: entry.name, artist: entry.artist, uri, inLiked: uri ? likedUris.has(uri) : false };
       } catch (e) {
-        results[i] = { appleId: track.id, name: track.name, artist: track.artist, uri: null, inLiked: false };
-        log(`  [שגיאה בחיפוש] ${track.name}: ${e.message}`);
+        results[i] = { name: entry.name, artist: entry.artist, uri: null, inLiked: false };
+        log(`  [שגיאה בחיפוש] ${entry.name}: ${e.message}`);
       } finally {
         completed++;
-        busy(`בודק שירים מול Spotify... (${completed}/${tracks.length})`);
+        busy(`בודק שירים מול Spotify... (${completed}/${entries.length})`);
       }
     });
 
@@ -604,13 +463,10 @@ async function loadShazamSongs() {
 }
 
 // ---------- wiring ----------
-$("btnGenAppleToken").addEventListener("click", generateAppleDeveloperToken);
-$("btnConnectApple").addEventListener("click", connectAppleMusic);
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
-$("btnLoad").addEventListener("click", loadShazamSongs);
+$("btnLoad").addEventListener("click", loadSongs);
 
-document.addEventListener("musickitloaded", updateAppleUi);
-handleSpotifyRedirect().then(() => { updateAppleUi(); updateSpotifyUi(); });
+handleSpotifyRedirect().then(() => { updateSpotifyUi(); });
 </script>
 </body>
 </html>
