@@ -384,7 +384,7 @@ async function ensureSpotifyPlaylist(name) {
     if (found) return found.id;
     url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
-  const created = await spotifyApi(`/users/${me.id}/playlists`, {
+  const created = await spotifyApi("/me/playlists", {
     method: "POST", body: JSON.stringify({ name, public: false }),
   });
   return created.id;
@@ -435,10 +435,9 @@ async function runSync() {
           const uri = await findSpotifyTrackUri(track.name, track.artist, track.isrc);
           if (uri) {
             if (spotifyPlaylistId) {
-              await spotifyApi(`/playlists/${spotifyPlaylistId}/tracks`, { method: "POST", body: JSON.stringify({ uris: [uri] }) });
+              await spotifyApi(`/playlists/${spotifyPlaylistId}/items`, { method: "POST", body: JSON.stringify({ uris: [uri] }) });
             } else {
-              const trackId = uri.split(":").pop();
-              await spotifyApi(`/me/tracks?ids=${trackId}`, { method: "PUT" });
+              await spotifyApi(`/me/library?uris=${encodeURIComponent(uri)}`, { method: "PUT" });
             }
             addedSpotify++;
             log(`  [ok] ${label} -> Spotify`);
