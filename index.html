@@ -174,7 +174,7 @@
     <h2>השירים שתייגת ב-Shazam</h2>
   </div>
   <p class="section-sub">
-    מציג את 50 השירים האחרונים שתייגת, וטוען עוד 50 בכל גלילה למטה.
+    מציג את 25 השירים האחרונים שתייגת, וטוען עוד 25 בכל גלילה למטה.
     <b>שום דבר לא נוסף לשום מקום באופן אוטומטי</b> - רק בלחיצה מפורשת על הכפתור הספציפי ליד שיר ספציפי.
   </p>
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
@@ -428,7 +428,9 @@ let shazamSourcePlaylistId = null;
 let totalTracks = 0;
 let loadedFromEnd = 0; // how many tracks (counting from the newest) have been fetched so far
 let isLoadingMore = false;
-const PAGE_SIZE = 50;
+let lastLoadFailureAt = 0;
+const LOAD_FAILURE_COOLDOWN_MS = 15000;
+const PAGE_SIZE = 25;
 
 function renderSongList() {
   const el = $("songList");
@@ -518,6 +520,7 @@ async function findMatchingPlaylists() {
 // Fetches the next batch of PAGE_SIZE songs, going from newest to oldest.
 async function loadMoreSongs() {
   if (isLoadingMore || loadedFromEnd >= totalTracks || !shazamSourcePlaylistId) return;
+  if (Date.now() - lastLoadFailureAt < LOAD_FAILURE_COOLDOWN_MS) return;
   isLoadingMore = true;
   try {
     const remaining = totalTracks - loadedFromEnd;
@@ -528,7 +531,17 @@ async function loadMoreSongs() {
     const rawTracks = await getPlaylistTracksPage(shazamSourcePlaylistId, offset, batchSize);
     rawTracks.reverse(); // page comes oldest-to-newest; reverse so newest is first within this batch
 
-    const likedFlags = await checkLikedBatch(rawTracks.map((t) => t.uri));
+    // The "already liked" check is a nice-to-have, not essential - if it fails (e.g. rate limit),
+    // still render the songs rather than blocking the whole batch. Worst case a song that's
+    // already liked shows an active "+ הוסף" button; clicking it just re-saves it, which is a
+    // harmless no-op on Spotify's side.
+    let likedFlags;
+    try {
+      likedFlags = await checkLikedBatch(rawTracks.map((t) => t.uri));
+    } catch (e) {
+      log(`לא ניתן לבדוק אילו שירים כבר אהובים (${e.message}) - ממשיך בלי הסימון.`);
+      likedFlags = rawTracks.map(() => false);
+    }
     const newSongs = rawTracks.map((t, i) => ({ ...t, inLiked: !!likedFlags[i] }));
 
     songs = songs.concat(newSongs);
@@ -537,6 +550,7 @@ async function loadMoreSongs() {
     log(`נטענו ${newSongs.length} שירים נוספים (${loadedFromEnd}/${totalTracks}).`);
   } catch (e) {
     log("שגיאה בטעינת שירים נוספים: " + e.message);
+    lastLoadFailureAt = Date.now();
   } finally {
     busy(null);
     isLoadingMore = false;
@@ -550,6 +564,7 @@ async function loadSongs() {
   // playlist) so it's cached across reloads within the session. Use "רענן התאמות" to rebuild it.
   totalTracks = 0;
   loadedFromEnd = 0;
+  lastLoadFailureAt = 0;
   renderSongList();
   try {
     const playlistName = $("shazamPlaylistName").value.trim() || "My Shazam Tracks";
