@@ -183,9 +183,9 @@
     <b>שום דבר לא נוסף לשום מקום באופן אוטומטי</b> - רק בלחיצה מפורשת על הכפתור הספציפי ליד שיר ספציפי.
   </p>
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-  <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי אלבום)</button>
+  <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי שם אמן)</button>
   <small class="hint" id="loadHint"></small>
-  <small class="hint">התאמת פלייליסטים לפי אלבום היא אופציונלית - לחצו "רענן התאמות פלייליסטים" רק כשתרצו אותה (זה סורק את כל הפלייליסטים שלכם, אז עדיף לא באמצע טעינת שירים). התוצאה נשמרת בזיכרון עד שתטענו את הדף מחדש. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
+  <small class="hint">התאמת פלייליסטים היא אופציונלית - לחצו "רענן התאמות פלייליסטים" רק כשתרצו אותה. זה קורא רק את <b>שמות</b> הפלייליסטים שלכם (בקשה אחת קלה, לא סורק את התוכן שלהם) ומחפש שם פלייליסט שמכיל את שם האמן של השיר. התוצאה נשמרת בזיכרון עד שתטענו את הדף מחדש. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -218,18 +218,6 @@ function busy(msg) {
 }
 
 $("redirectUriHint").textContent = location.origin + location.pathname;
-
-// ---------- bounded concurrency helper ----------
-async function mapWithConcurrency(items, limit, worker) {
-  let next = 0;
-  async function run() {
-    while (next < items.length) {
-      const i = next++;
-      await worker(items[i], i);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-}
 
 // ---------- persisted settings ----------
 ["spotifyClientId", "shazamPlaylistName"].forEach((id) => {
@@ -360,7 +348,7 @@ async function getPlaylistTotal(playlistId) {
 async function getPlaylistTracksPage(playlistId, offset, limit) {
   // Request both "item" (current field name) and "track" (older/deprecated name) since which one
   // the API actually populates has changed over time - asking for only one silently returns nothing if wrong.
-  const fields = encodeURIComponent("items(item(name,artists,uri,album(id)),track(name,artists,uri,album(id))),next");
+  const fields = encodeURIComponent("items(item(name,artists,uri),track(name,artists,uri)),next");
   const data = await spotifyApi(`/playlists/${playlistId}/items?limit=${limit}&offset=${offset}&fields=${fields}`);
   return (data.items || []).map((entry) => {
     const it = entry.item || entry.track;
@@ -369,7 +357,6 @@ async function getPlaylistTracksPage(playlistId, offset, limit) {
       name: it.name,
       artist: (it.artists && it.artists[0]) ? it.artists[0].name : "",
       uri: it.uri,
-      albumId: it.album ? it.album.id : null,
     };
   }).filter(Boolean);
 }
@@ -381,8 +368,10 @@ async function checkLikedBatch(uris) {
   return Array.isArray(res) ? res : uris.map(() => false);
 }
 
-// ---------- album -> playlist index (for "suggest a matching playlist" feature) ----------
-async function buildAlbumPlaylistIndex(excludePlaylistId) {
+// ---------- playlist name list (for "suggest a matching playlist" feature) ----------
+// Matches by comparing the artist's name against playlist names only - no scanning of playlist
+// contents at all, so this is just one cheap paginated call instead of dozens.
+async function fetchOwnedPlaylistNames(excludePlaylistId) {
   busy("קורא את רשימת הפלייליסטים שלך...");
   const me = await spotifyApi("/me");
   const playlists = [];
@@ -392,33 +381,21 @@ async function buildAlbumPlaylistIndex(excludePlaylistId) {
     playlists.push(...page.items);
     url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
-  const candidates = playlists.filter((p) => p.id !== excludePlaylistId && (p.owner.id === me.id || p.collaborative));
+  return playlists
+    .filter((p) => p.id !== excludePlaylistId && (p.owner.id === me.id || p.collaborative))
+    .map((p) => ({ id: p.id, name: p.name }));
+}
 
-  const index = new Map(); // albumId -> [{id, name}]
-  let completed = 0;
-  await mapWithConcurrency(candidates, 5, async (pl) => {
-    try {
-      let itemsUrl = `/playlists/${pl.id}/items?limit=100&fields=next,items(item(uri,album(id)),track(uri,album(id)))`;
-      while (itemsUrl) {
-        const page = await spotifyApi(itemsUrl);
-        for (const entry of page.items) {
-          const it = entry.item || entry.track;
-          const albumId = it && it.album && it.album.id;
-          if (!albumId) continue;
-          if (!index.has(albumId)) index.set(albumId, []);
-          const arr = index.get(albumId);
-          if (!arr.some((p2) => p2.id === pl.id)) arr.push({ id: pl.id, name: pl.name });
-        }
-        itemsUrl = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
-      }
-    } catch (e) {
-      log(`  לא ניתן לקרוא את "${pl.name}", מדלג: ${e.message}`);
-    } finally {
-      completed++;
-      busy(`בונה אינדקס פלייליסטים לפי אלבום... (${completed}/${candidates.length})`);
-    }
+// Finds playlists whose name matches the song's artist - a substring match either direction,
+// guarded by a minimum length so short names (e.g. "רוק") don't match everything.
+function matchPlaylistsForArtist(artist, playlistNames) {
+  if (!artist || artist.length < 3) return [];
+  const artistLower = artist.toLowerCase();
+  return playlistNames.filter((p) => {
+    const nameLower = p.name.toLowerCase();
+    if (nameLower.length < 3) return false;
+    return nameLower.includes(artistLower) || artistLower.includes(nameLower);
   });
-  return index;
 }
 
 // ================= Load & render song list =================
@@ -428,8 +405,8 @@ function updateLoadButton() {
   $("loadHint").textContent = !spotifyReady ? "מנוטרל עד שתתחבר/י ל-Spotify למעלה." : "";
 }
 
-let songs = []; // { name, artist, uri, albumId, inLiked }, newest-first
-let albumPlaylistIndex = null; // Map albumId -> [{id, name}], built on demand
+let songs = []; // { name, artist, uri, inLiked }, newest-first
+let playlistNames = null; // [{id, name}], built on demand
 let shazamSourcePlaylistId = null;
 let totalTracks = 0;
 let loadedFromEnd = 0; // how many tracks (counting from the newest) have been fetched so far
@@ -450,7 +427,7 @@ function renderSongList() {
       : `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
 
     let matchBtn = "";
-    const match = albumPlaylistIndex && s.albumId ? albumPlaylistIndex.get(s.albumId) : null;
+    const match = playlistNames ? matchPlaylistsForArtist(s.artist, playlistNames) : null;
     if (match && match.length) {
       const target = match[0];
       matchBtn = `<button class="btn-add-playlist secondary" data-idx="${i}" data-pid="${target.id}" data-pname="${target.name.replace(/"/g, "&quot;")}">+ ל-${target.name}</button>`;
@@ -510,13 +487,13 @@ async function addSongToPlaylist(idx, playlistId, playlistName, btn) {
 async function findMatchingPlaylists() {
   $("btnMatchPlaylists").disabled = true;
   try {
-    log("בונה אינדקס אלבומים מול הפלייליסטים שלך (זה עשוי לקחת זמן)...");
-    albumPlaylistIndex = await buildAlbumPlaylistIndex(shazamSourcePlaylistId);
-    const matched = songs.filter((s) => s.albumId && albumPlaylistIndex.has(s.albumId)).length;
-    log(`נמצאו ${matched} שירים שמתאימים לפלייליסטים קיימים לפי אלבום.`);
+    log("קורא את שמות הפלייליסטים שלך...");
+    playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
+    const matched = songs.filter((s) => matchPlaylistsForArtist(s.artist, playlistNames).length).length;
+    log(`נמצאו ${matched} שירים שמתאימים לפלייליסטים קיימים לפי שם האמן.`);
     renderSongList();
   } catch (e) {
-    log("שגיאה בבניית האינדקס: " + e.message);
+    log("שגיאה בקריאת שמות הפלייליסטים: " + e.message);
   } finally {
     busy(null);
     $("btnMatchPlaylists").disabled = false;
@@ -565,8 +542,8 @@ async function loadMoreSongs() {
 async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
-  // albumPlaylistIndex is intentionally NOT reset here - it's expensive to build (scans every
-  // playlist) so it's cached across reloads within the session. Use "רענן התאמות" to rebuild it.
+  // playlistNames is intentionally NOT reset here - it's cached across reloads within the
+  // session (rebuilding it is cheap now, but no reason to redo it every load). Use "רענן התאמות" to rebuild it.
   totalTracks = 0;
   loadedFromEnd = 0;
   lastLoadFailureAt = 0;
@@ -589,7 +566,7 @@ async function loadSongs() {
     log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
 
     $("btnMatchPlaylists").disabled = false;
-    if (albumPlaylistIndex) {
+    if (playlistNames) {
       renderSongList(); // apply the already-cached index to the newly loaded songs immediately
     }
     // Playlist matching no longer auto-runs on load - scanning every playlist burns through
