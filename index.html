@@ -180,7 +180,7 @@
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
   <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי אלבום)</button>
   <small class="hint" id="loadHint"></small>
-  <small class="hint">התאמת פלייליסטים לפי אלבום רצה אוטומטית ברקע אחרי הטעינה, ומוסיפה ליד שיר מתאים כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים על הכפתור הזה בעצמכם.</small>
+  <small class="hint">התאמת פלייליסטים לפי אלבום רצה אוטומטית ברקע בפעם הראשונה בלבד (זה סורק את כל הפלייליסטים שלך), ואז נשמרת בזיכרון - לא נסרקת מחדש בכל "טען שירים". לחצו "רענן התאמות" רק אם הוספתם שירים חדשים לפלייליסטים ורוצים לעדכן. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -546,7 +546,8 @@ async function loadMoreSongs() {
 async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
-  albumPlaylistIndex = null;
+  // albumPlaylistIndex is intentionally NOT reset here - it's expensive to build (scans every
+  // playlist) so it's cached across reloads within the session. Use "רענן התאמות" to rebuild it.
   totalTracks = 0;
   loadedFromEnd = 0;
   renderSongList();
@@ -568,8 +569,13 @@ async function loadSongs() {
     log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
 
     $("btnMatchPlaylists").disabled = false;
-    // small delay before the background scan so it doesn't collide with the load's own API burst (avoids 429s)
-    setTimeout(findMatchingPlaylists, 2000);
+    if (!albumPlaylistIndex) {
+      // Only auto-run once per session (it's expensive - scans every playlist). A short delay
+      // avoids colliding with the load's own API burst (helps avoid 429s).
+      setTimeout(findMatchingPlaylists, 2000);
+    } else {
+      renderSongList(); // apply the already-cached index to the newly loaded songs immediately
+    }
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
