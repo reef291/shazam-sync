@@ -175,7 +175,9 @@
   </div>
   <p class="section-sub">כל שיר מוצג עם כפתור הוספה משלו - לוחצים ומוסיפים אותו ל-Liked Songs ב-Spotify.</p>
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
+  <button id="btnMatchPlaylists" class="secondary" disabled>זהה פלייליסטים מתאימים (לפי אלבום)</button>
   <small class="hint" id="loadHint"></small>
+  <small class="hint">"זהה פלייליסטים מתאימים" סורק את כל הפלייליסטים שלך ומציע להוסיף שיר גם לפלייליסט שכבר יש בו שיר אחר מאותו אלבום - זה יכול לקחת קצת זמן בהתאם לכמות הפלייליסטים שלך.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -208,6 +210,18 @@ function busy(msg) {
 }
 
 $("redirectUriHint").textContent = location.origin + location.pathname;
+
+// ---------- bounded concurrency helper ----------
+async function mapWithConcurrency(items, limit, worker) {
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const i = next++;
+      await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+}
 
 // ---------- persisted settings ----------
 ["spotifyClientId", "shazamPlaylistName"].forEach((id) => {
@@ -328,7 +342,14 @@ async function getPlaylistTracks(playlistId) {
     const page = await spotifyApi(url);
     for (const entry of page.items) {
       const it = entry.item || entry.track;
-      if (it && it.uri) tracks.push({ name: it.name, artist: (it.artists && it.artists[0]) ? it.artists[0].name : "", uri: it.uri });
+      if (it && it.uri) {
+        tracks.push({
+          name: it.name,
+          artist: (it.artists && it.artists[0]) ? it.artists[0].name : "",
+          uri: it.uri,
+          albumId: it.album ? it.album.id : null,
+        });
+      }
     }
     url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
@@ -347,6 +368,46 @@ async function getLikedSongUris() {
   return uris;
 }
 
+// ---------- album -> playlist index (for "suggest a matching playlist" feature) ----------
+async function buildAlbumPlaylistIndex(excludePlaylistId) {
+  busy("קורא את רשימת הפלייליסטים שלך...");
+  const me = await spotifyApi("/me");
+  const playlists = [];
+  let url = "/me/playlists?limit=50";
+  while (url) {
+    const page = await spotifyApi(url);
+    playlists.push(...page.items);
+    url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
+  }
+  const candidates = playlists.filter((p) => p.id !== excludePlaylistId && (p.owner.id === me.id || p.collaborative));
+
+  const index = new Map(); // albumId -> [{id, name}]
+  let completed = 0;
+  await mapWithConcurrency(candidates, 5, async (pl) => {
+    try {
+      let itemsUrl = `/playlists/${pl.id}/items?limit=100&fields=next,items(track(uri,album(id)))`;
+      while (itemsUrl) {
+        const page = await spotifyApi(itemsUrl);
+        for (const entry of page.items) {
+          const it = entry.item || entry.track;
+          const albumId = it && it.album && it.album.id;
+          if (!albumId) continue;
+          if (!index.has(albumId)) index.set(albumId, []);
+          const arr = index.get(albumId);
+          if (!arr.some((p2) => p2.id === pl.id)) arr.push({ id: pl.id, name: pl.name });
+        }
+        itemsUrl = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
+      }
+    } catch (e) {
+      log(`  לא ניתן לקרוא את "${pl.name}", מדלג: ${e.message}`);
+    } finally {
+      completed++;
+      busy(`בונה אינדקס פלייליסטים לפי אלבום... (${completed}/${candidates.length})`);
+    }
+  });
+  return index;
+}
+
 // ================= Load & render song list =================
 function updateLoadButton() {
   const spotifyReady = !!LS.get("spotify_token", null);
@@ -354,7 +415,9 @@ function updateLoadButton() {
   $("loadHint").textContent = !spotifyReady ? "מנוטרל עד שתתחבר/י ל-Spotify למעלה." : "";
 }
 
-let songs = []; // { name, artist, uri, inLiked }
+let songs = []; // { name, artist, uri, albumId, inLiked }
+let albumPlaylistIndex = null; // Map albumId -> [{id, name}], built on demand
+let shazamSourcePlaylistId = null;
 
 function renderSongList() {
   const el = $("songList");
@@ -363,40 +426,86 @@ function renderSongList() {
     return;
   }
   el.innerHTML = songs.map((s, i) => {
-    const btn = s.inLiked
+    const addBtn = s.inLiked
       ? `<button class="added" disabled data-idx="${i}">✓ כבר ב-Liked Songs</button>`
       : `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
+
+    let matchBtn = "";
+    const match = albumPlaylistIndex && s.albumId ? albumPlaylistIndex.get(s.albumId) : null;
+    if (match && match.length) {
+      const target = match[0];
+      matchBtn = `<button class="btn-add-playlist secondary" data-idx="${i}" data-pid="${target.id}" data-pname="${target.name.replace(/"/g, "&quot;")}">+ ל-${target.name}</button>`;
+    }
+
     return `<div class="song-row" data-row="${i}">
       <div class="song-info"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
-      ${btn}
+      <div style="display:flex; gap:6px; flex-shrink:0;">${matchBtn}${addBtn}</div>
     </div>`;
   }).join("");
 
   el.querySelectorAll(".btn-add-one").forEach((btn) => {
-    btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx)));
+    btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx), btn));
+  });
+  el.querySelectorAll(".btn-add-playlist").forEach((btn) => {
+    btn.addEventListener("click", () => addSongToPlaylist(Number(btn.dataset.idx), btn.dataset.pid, btn.dataset.pname, btn));
   });
 }
 
-async function addOneSong(idx) {
+async function addOneSong(idx, btn) {
   const s = songs[idx];
-  const row = $("songList").querySelector(`.song-row[data-row="${idx}"] button`);
-  row.disabled = true;
-  row.textContent = "מוסיף...";
+  btn.disabled = true;
+  btn.textContent = "מוסיף...";
   try {
     await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: "PUT" });
     s.inLiked = true;
+    btn.className = "added";
+    btn.textContent = "✓ נוסף!";
     log(`נוסף: ${s.name} - ${s.artist}`);
-    renderSongList();
   } catch (e) {
     log(`שגיאה בהוספת "${s.name}": ${e.message}`);
-    row.disabled = false;
-    row.textContent = "+ הוסף";
+    btn.disabled = false;
+    btn.className = "btn-add-one";
+    btn.textContent = "+ הוסף";
+  }
+}
+
+async function addSongToPlaylist(idx, playlistId, playlistName, btn) {
+  const s = songs[idx];
+  btn.disabled = true;
+  btn.textContent = "מוסיף...";
+  try {
+    await spotifyApi(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
+    btn.className = "added";
+    btn.textContent = `✓ נוסף ל-${playlistName}`;
+    log(`נוסף "${s.name}" לפלייליסט "${playlistName}".`);
+  } catch (e) {
+    log(`שגיאה בהוספה לפלייליסט "${playlistName}": ${e.message}`);
+    btn.disabled = false;
+    btn.className = "btn-add-playlist secondary";
+    btn.textContent = `+ ל-${playlistName}`;
+  }
+}
+
+async function findMatchingPlaylists() {
+  $("btnMatchPlaylists").disabled = true;
+  try {
+    log("בונה אינדקס אלבומים מול הפלייליסטים שלך (זה עשוי לקחת זמן)...");
+    albumPlaylistIndex = await buildAlbumPlaylistIndex(shazamSourcePlaylistId);
+    const matched = songs.filter((s) => s.albumId && albumPlaylistIndex.has(s.albumId)).length;
+    log(`נמצאו ${matched} שירים שמתאימים לפלייליסטים קיימים לפי אלבום.`);
+    renderSongList();
+  } catch (e) {
+    log("שגיאה בבניית האינדקס: " + e.message);
+  } finally {
+    busy(null);
+    $("btnMatchPlaylists").disabled = false;
   }
 }
 
 async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
+  albumPlaylistIndex = null;
   renderSongList();
   try {
     const playlistName = $("shazamPlaylistName").value.trim() || "My Shazam Tracks";
@@ -407,6 +516,7 @@ async function loadSongs() {
       log(`לא נמצאה פלייליסט בשם "${playlistName}". ודא שחיברת את Spotify בתוך אפליקציית Shazam (Settings ← Connect to Spotify).`);
       return;
     }
+    shazamSourcePlaylistId = playlistId;
 
     busy("קורא שירים מהפלייליסט...");
     const tracks = await getPlaylistTracks(playlistId);
@@ -414,9 +524,10 @@ async function loadSongs() {
     log(`נמצאו ${tracks.length} שירים בפלייליסט.`);
 
     const likedUris = await getLikedSongUris();
-    songs = tracks.map((t) => ({ name: t.name, artist: t.artist, uri: t.uri, inLiked: likedUris.has(t.uri) }));
+    songs = tracks.map((t) => ({ name: t.name, artist: t.artist, uri: t.uri, albumId: t.albumId, inLiked: likedUris.has(t.uri) }));
     renderSongList();
     log(`מוצגים ${songs.length} שירים.`);
+    $("btnMatchPlaylists").disabled = false;
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
@@ -428,6 +539,7 @@ async function loadSongs() {
 // ---------- wiring ----------
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
 $("btnLoad").addEventListener("click", loadSongs);
+$("btnMatchPlaylists").addEventListener("click", findMatchingPlaylists);
 
 handleSpotifyRedirect().then(() => { updateSpotifyUi(); });
 </script>
