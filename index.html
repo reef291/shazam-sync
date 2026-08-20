@@ -350,7 +350,8 @@ async function getPlaylistTotal(playlistId) {
   return data.total || 0;
 }
 
-// Fetches one page of raw playlist tracks (insertion order, oldest-to-newest within the page).
+// Fetches one page of raw playlist tracks. Spotify returns this playlist newest-first at offset 0
+// (most recently Shazamed track first), so offset 0 IS the newest page - no reversal needed.
 async function getPlaylistTracksPage(playlistId, offset, limit) {
   // Request both "item" (current field name) and "track" (older/deprecated name) since which one
   // the API actually populates has changed over time - asking for only one silently returns nothing if wrong.
@@ -525,11 +526,10 @@ async function loadMoreSongs() {
   try {
     const remaining = totalTracks - loadedFromEnd;
     const batchSize = Math.min(PAGE_SIZE, remaining);
-    const offset = totalTracks - loadedFromEnd - batchSize;
+    const offset = loadedFromEnd; // offset 0 is the newest track, so this walks newest -> oldest
     busy(`טוען ${batchSize} שירים נוספים...`);
 
     const rawTracks = await getPlaylistTracksPage(shazamSourcePlaylistId, offset, batchSize);
-    rawTracks.reverse(); // page comes oldest-to-newest; reverse so newest is first within this batch
 
     // The "already liked" check is a nice-to-have, not essential - if it fails (e.g. rate limit),
     // still render the songs rather than blocking the whole batch. Worst case a song that's
