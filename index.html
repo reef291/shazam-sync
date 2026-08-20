@@ -173,11 +173,14 @@
     <span class="step-num">3</span>
     <h2>השירים שתייגת ב-Shazam</h2>
   </div>
-  <p class="section-sub">כל שיר מוצג עם כפתור הוספה משלו - לוחצים ומוסיפים אותו ל-Liked Songs ב-Spotify.</p>
+  <p class="section-sub">
+    מציג את 50 השירים האחרונים שתייגת, וטוען עוד 50 בכל גלילה למטה.
+    <b>שום דבר לא נוסף לשום מקום באופן אוטומטי</b> - רק בלחיצה מפורשת על הכפתור הספציפי ליד שיר ספציפי.
+  </p>
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-  <button id="btnMatchPlaylists" class="secondary" disabled>זהה פלייליסטים מתאימים (לפי אלבום)</button>
+  <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי אלבום)</button>
   <small class="hint" id="loadHint"></small>
-  <small class="hint">"זהה פלייליסטים מתאימים" סורק את כל הפלייליסטים שלך ומציע להוסיף שיר גם לפלייליסט שכבר יש בו שיר אחר מאותו אלבום - זה יכול לקחת קצת זמן בהתאם לכמות הפלייליסטים שלך.</small>
+  <small class="hint">התאמת פלייליסטים לפי אלבום רצה אוטומטית ברקע אחרי הטעינה, ומוסיפה ליד שיר מתאים כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים על הכפתור הזה בעצמכם.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -240,7 +243,9 @@ function b64url(bytes) {
 async function sha256(str) { return crypto.subtle.digest("SHA-256", new TextEncoder().encode(str)); }
 
 // ================= Spotify (PKCE) =================
-const SPOTIFY_SCOPE = "playlist-read-private user-library-modify user-library-read user-read-private";
+// Spotify's unified /me/library write endpoint checks for the full scope set below
+// even when only saving a track (not a playlist/artist), so all are required here.
+const SPOTIFY_SCOPE = "playlist-read-private playlist-modify-public playlist-modify-private user-follow-modify user-library-modify user-library-read user-read-private";
 
 function updateSpotifyUi() {
   const tok = LS.get("spotify_token", null);
@@ -335,37 +340,32 @@ async function findPlaylistIdByName(name) {
   return null;
 }
 
-async function getPlaylistTracks(playlistId) {
-  const tracks = [];
-  let url = `/playlists/${playlistId}/items?limit=100`;
-  while (url) {
-    const page = await spotifyApi(url);
-    for (const entry of page.items) {
-      const it = entry.item || entry.track;
-      if (it && it.uri) {
-        tracks.push({
-          name: it.name,
-          artist: (it.artists && it.artists[0]) ? it.artists[0].name : "",
-          uri: it.uri,
-          albumId: it.album ? it.album.id : null,
-        });
-      }
-    }
-    url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
-  }
-  return tracks;
+async function getPlaylistTotal(playlistId) {
+  const data = await spotifyApi(`/playlists/${playlistId}/items?limit=1&fields=total`);
+  return data.total || 0;
 }
 
-async function getLikedSongUris() {
-  const uris = new Set();
-  let url = "/me/tracks?limit=50";
-  while (url) {
-    busy(`קורא Liked Songs... (${uris.size} עד כה)`);
-    const page = await spotifyApi(url);
-    for (const item of page.items) if (item.track) uris.add(item.track.uri);
-    url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
-  }
-  return uris;
+// Fetches one page of raw playlist tracks (insertion order, oldest-to-newest within the page).
+async function getPlaylistTracksPage(playlistId, offset, limit) {
+  const fields = encodeURIComponent("items(track(name,artists,uri,album(id))),next");
+  const data = await spotifyApi(`/playlists/${playlistId}/items?limit=${limit}&offset=${offset}&fields=${fields}`);
+  return (data.items || []).map((entry) => {
+    const it = entry.item || entry.track;
+    if (!it || !it.uri) return null;
+    return {
+      name: it.name,
+      artist: (it.artists && it.artists[0]) ? it.artists[0].name : "",
+      uri: it.uri,
+      albumId: it.album ? it.album.id : null,
+    };
+  }).filter(Boolean);
+}
+
+// Batched "is this saved to Liked Songs" check - avoids downloading the entire liked library.
+async function checkLikedBatch(uris) {
+  if (!uris.length) return [];
+  const res = await spotifyApi(`/me/library/contains?uris=${encodeURIComponent(uris.join(","))}`);
+  return Array.isArray(res) ? res : uris.map(() => false);
 }
 
 // ---------- album -> playlist index (for "suggest a matching playlist" feature) ----------
@@ -415,9 +415,13 @@ function updateLoadButton() {
   $("loadHint").textContent = !spotifyReady ? "מנוטרל עד שתתחבר/י ל-Spotify למעלה." : "";
 }
 
-let songs = []; // { name, artist, uri, albumId, inLiked }
+let songs = []; // { name, artist, uri, albumId, inLiked }, newest-first
 let albumPlaylistIndex = null; // Map albumId -> [{id, name}], built on demand
 let shazamSourcePlaylistId = null;
+let totalTracks = 0;
+let loadedFromEnd = 0; // how many tracks (counting from the newest) have been fetched so far
+let isLoadingMore = false;
+const PAGE_SIZE = 50;
 
 function renderSongList() {
   const el = $("songList");
@@ -441,7 +445,9 @@ function renderSongList() {
       <div class="song-info"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
       <div style="display:flex; gap:6px; flex-shrink:0;">${matchBtn}${addBtn}</div>
     </div>`;
-  }).join("");
+  }).join("") + (loadedFromEnd < totalTracks
+    ? `<div class="empty-note">מציג ${loadedFromEnd} מתוך ${totalTracks} - גללו למטה לעוד</div>`
+    : (totalTracks ? `<div class="empty-note">מוצגים כל ${totalTracks} השירים.</div>` : ""));
 
   el.querySelectorAll(".btn-add-one").forEach((btn) => {
     btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx), btn));
@@ -502,10 +508,40 @@ async function findMatchingPlaylists() {
   }
 }
 
+// Fetches the next batch of PAGE_SIZE songs, going from newest to oldest.
+async function loadMoreSongs() {
+  if (isLoadingMore || loadedFromEnd >= totalTracks || !shazamSourcePlaylistId) return;
+  isLoadingMore = true;
+  try {
+    const remaining = totalTracks - loadedFromEnd;
+    const batchSize = Math.min(PAGE_SIZE, remaining);
+    const offset = totalTracks - loadedFromEnd - batchSize;
+    busy(`טוען ${batchSize} שירים נוספים...`);
+
+    const rawTracks = await getPlaylistTracksPage(shazamSourcePlaylistId, offset, batchSize);
+    rawTracks.reverse(); // page comes oldest-to-newest; reverse so newest is first within this batch
+
+    const likedFlags = await checkLikedBatch(rawTracks.map((t) => t.uri));
+    const newSongs = rawTracks.map((t, i) => ({ ...t, inLiked: !!likedFlags[i] }));
+
+    songs = songs.concat(newSongs);
+    loadedFromEnd += batchSize;
+    renderSongList();
+    log(`נטענו ${newSongs.length} שירים נוספים (${loadedFromEnd}/${totalTracks}).`);
+  } catch (e) {
+    log("שגיאה בטעינת שירים נוספים: " + e.message);
+  } finally {
+    busy(null);
+    isLoadingMore = false;
+  }
+}
+
 async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
   albumPlaylistIndex = null;
+  totalTracks = 0;
+  loadedFromEnd = 0;
   renderSongList();
   try {
     const playlistName = $("shazamPlaylistName").value.trim() || "My Shazam Tracks";
@@ -518,16 +554,14 @@ async function loadSongs() {
     }
     shazamSourcePlaylistId = playlistId;
 
-    busy("קורא שירים מהפלייליסט...");
-    const tracks = await getPlaylistTracks(playlistId);
-    if (!tracks.length) { log("הפלייליסט ריק - אין עדיין שירים מתויגים."); return; }
-    log(`נמצאו ${tracks.length} שירים בפלייליסט.`);
+    totalTracks = await getPlaylistTotal(playlistId);
+    if (!totalTracks) { log("הפלייליסט ריק - אין עדיין שירים מתויגים."); return; }
 
-    const likedUris = await getLikedSongUris();
-    songs = tracks.map((t) => ({ name: t.name, artist: t.artist, uri: t.uri, albumId: t.albumId, inLiked: likedUris.has(t.uri) }));
-    renderSongList();
-    log(`מוצגים ${songs.length} שירים.`);
+    await loadMoreSongs(); // loads the first (most recent) PAGE_SIZE songs
+    log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
+
     $("btnMatchPlaylists").disabled = false;
+    findMatchingPlaylists(); // runs in the background so match suggestions are ready as you scroll
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
@@ -535,6 +569,13 @@ async function loadSongs() {
     updateLoadButton();
   }
 }
+
+// ---------- infinite scroll ----------
+window.addEventListener("scroll", () => {
+  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) {
+    loadMoreSongs();
+  }
+});
 
 // ---------- wiring ----------
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
