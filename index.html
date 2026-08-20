@@ -97,7 +97,12 @@
   .track-name { font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track-artist { color: var(--muted); font-size: 0.85rem; }
   .song-row button { margin: 0; flex-shrink: 0; white-space: nowrap; }
-  .song-row button.added { background: var(--accent2); color: #06280f; }
+  .song-row button.added { background: var(--accent2); color: #06280f; animation: addedPop .35s ease; }
+  @keyframes addedPop {
+    0% { transform: scale(1); }
+    45% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
   .empty-note { color: var(--muted); font-size: 0.88rem; padding: 10px 2px; }
 
   #log {
@@ -475,7 +480,7 @@ async function addOneSong(idx, btn) {
     await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: "PUT" });
     s.inLiked = true;
     btn.className = "added";
-    btn.textContent = "✓ נוסף!";
+    btn.textContent = "✓ התווסף";
     log(`נוסף: ${s.name} - ${s.artist}`);
   } catch (e) {
     log(`שגיאה בהוספת "${s.name}": ${e.message}`);
@@ -492,7 +497,7 @@ async function addSongToPlaylist(idx, playlistId, playlistName, btn) {
   try {
     await spotifyApi(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
     btn.className = "added";
-    btn.textContent = `✓ נוסף ל-${playlistName}`;
+    btn.textContent = `✓ התווסף ל-${playlistName}`;
     log(`נוסף "${s.name}" לפלייליסט "${playlistName}".`);
   } catch (e) {
     log(`שגיאה בהוספה לפלייליסט "${playlistName}": ${e.message}`);
