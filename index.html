@@ -185,7 +185,7 @@
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
   <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי אלבום)</button>
   <small class="hint" id="loadHint"></small>
-  <small class="hint">התאמת פלייליסטים לפי אלבום רצה אוטומטית ברקע בפעם הראשונה בלבד (זה סורק את כל הפלייליסטים שלך), ואז נשמרת בזיכרון - לא נסרקת מחדש בכל "טען שירים". לחצו "רענן התאמות" רק אם הוספתם שירים חדשים לפלייליסטים ורוצים לעדכן. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
+  <small class="hint">התאמת פלייליסטים לפי אלבום היא אופציונלית - לחצו "רענן התאמות פלייליסטים" רק כשתרצו אותה (זה סורק את כל הפלייליסטים שלכם, אז עדיף לא באמצע טעינת שירים). התוצאה נשמרת בזיכרון עד שתטענו את הדף מחדש. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -589,13 +589,12 @@ async function loadSongs() {
     log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
 
     $("btnMatchPlaylists").disabled = false;
-    if (!albumPlaylistIndex) {
-      // Only auto-run once per session (it's expensive - scans every playlist). A short delay
-      // avoids colliding with the load's own API burst (helps avoid 429s).
-      setTimeout(findMatchingPlaylists, 2000);
-    } else {
+    if (albumPlaylistIndex) {
       renderSongList(); // apply the already-cached index to the newly loaded songs immediately
     }
+    // Playlist matching no longer auto-runs on load - scanning every playlist burns through
+    // Spotify's rate limit on its own and was blocking the "+ הוסף" click right after. It's
+    // fully opt-in now: click "רענן התאמות פלייליסטים" when you actually want it.
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
