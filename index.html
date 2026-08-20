@@ -319,12 +319,17 @@ async function getSpotifyAccessToken() {
   return updated.access_token;
 }
 
-async function spotifyApi(path, options = {}) {
+async function spotifyApi(path, options = {}, retriesLeft = 3) {
   const token = await getSpotifyAccessToken();
   const resp = await fetch("https://api.spotify.com/v1" + path, {
     ...options,
     headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", ...(options.headers || {}) },
   });
+  if (resp.status === 429 && retriesLeft > 0) {
+    const retryAfter = Number(resp.headers.get("Retry-After")) || 1;
+    await new Promise((r) => setTimeout(r, (retryAfter + 0.5) * 1000));
+    return spotifyApi(path, options, retriesLeft - 1);
+  }
   if (!resp.ok) throw new Error(`Spotify API ${path} -> ${resp.status}`);
   return resp.status === 204 ? null : resp.json();
 }
@@ -347,7 +352,9 @@ async function getPlaylistTotal(playlistId) {
 
 // Fetches one page of raw playlist tracks (insertion order, oldest-to-newest within the page).
 async function getPlaylistTracksPage(playlistId, offset, limit) {
-  const fields = encodeURIComponent("items(track(name,artists,uri,album(id))),next");
+  // Request both "item" (current field name) and "track" (older/deprecated name) since which one
+  // the API actually populates has changed over time - asking for only one silently returns nothing if wrong.
+  const fields = encodeURIComponent("items(item(name,artists,uri,album(id)),track(name,artists,uri,album(id))),next");
   const data = await spotifyApi(`/playlists/${playlistId}/items?limit=${limit}&offset=${offset}&fields=${fields}`);
   return (data.items || []).map((entry) => {
     const it = entry.item || entry.track;
@@ -385,7 +392,7 @@ async function buildAlbumPlaylistIndex(excludePlaylistId) {
   let completed = 0;
   await mapWithConcurrency(candidates, 5, async (pl) => {
     try {
-      let itemsUrl = `/playlists/${pl.id}/items?limit=100&fields=next,items(track(uri,album(id)))`;
+      let itemsUrl = `/playlists/${pl.id}/items?limit=100&fields=next,items(item(uri,album(id)),track(uri,album(id)))`;
       while (itemsUrl) {
         const page = await spotifyApi(itemsUrl);
         for (const entry of page.items) {
@@ -561,7 +568,8 @@ async function loadSongs() {
     log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
 
     $("btnMatchPlaylists").disabled = false;
-    findMatchingPlaylists(); // runs in the background so match suggestions are ready as you scroll
+    // small delay before the background scan so it doesn't collide with the load's own API burst (avoids 429s)
+    setTimeout(findMatchingPlaylists, 2000);
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
