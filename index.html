@@ -319,7 +319,7 @@ async function getSpotifyAccessToken() {
   return updated.access_token;
 }
 
-async function spotifyApi(path, options = {}, retriesLeft = 3) {
+async function spotifyApi(path, options = {}, retriesLeft = 5) {
   const token = await getSpotifyAccessToken();
   const resp = await fetch("https://api.spotify.com/v1" + path, {
     ...options,
