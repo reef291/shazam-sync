@@ -58,12 +58,11 @@
   .section-sub b { color: var(--text); }
 
   label { display: block; font-size: 0.82rem; color: var(--muted); margin: 10px 0 4px; }
-  input[type=text], textarea {
+  input[type=text] {
     width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); font-size: 0.9rem; font-family: inherit;
   }
-  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
-  textarea { min-height: 130px; font-size: 0.86rem; resize: vertical; line-height: 1.5; }
+  input:focus { outline: none; border-color: var(--accent); }
 
   button {
     background: var(--accent); color: white; border: none; border-radius: 9px;
@@ -88,14 +87,6 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  #dropZone {
-    border: 2px dashed var(--border); border-radius: 10px; padding: 20px 14px; text-align: center;
-    color: var(--muted); font-size: 0.85rem; cursor: pointer; transition: border-color .15s, background .15s;
-  }
-  #dropZone:hover, #dropZone:focus { border-color: var(--accent); outline: none; }
-  #dropZone.dragover { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, transparent); }
-  .dropzone-link { color: var(--accent); text-decoration: underline; }
-
   #songList { margin-top: 12px; }
   .song-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -107,7 +98,6 @@
   .track-artist { color: var(--muted); font-size: 0.85rem; }
   .song-row button { margin: 0; flex-shrink: 0; white-space: nowrap; }
   .song-row button.added { background: var(--accent2); color: #06280f; }
-  .song-row button.unavailable { background: var(--pill-bg); color: var(--muted); }
   .empty-note { color: var(--muted); font-size: 0.88rem; padding: 10px 2px; }
 
   #log {
@@ -125,12 +115,15 @@
 <body>
 
 <h1>Shazam Sync</h1>
-<p class="sub">מדביקים את רשימת השירים שתויגו ב-Shazam, ולכל שיר יש כפתור הוספה משלו ל-Liked Songs ב-Spotify.</p>
+<p class="sub">
+  קורא ישירות את הפלייליסט שה-Shazam שלך מכניס אליו שירים אוטומטית ב-Spotify, ומציג כפתור הוספה
+  ל-Liked Songs ליד כל שיר.
+</p>
 
 <div class="flow">
   <div class="flow-step">
-    <div class="flow-icon on">📝</div>
-    <div class="flow-label">רשימת Shazam</div>
+    <div class="flow-icon on">🎵</div>
+    <div class="flow-label">Shazam</div>
   </div>
   <div class="flow-arrow">←</div>
   <div class="flow-step">
@@ -144,6 +137,21 @@
   <summary>
     <div class="section-head">
       <span class="step-num">1</span>
+      <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> חבר את Shazam ל-Spotify</h2>
+    </div>
+  </summary>
+  <p class="section-sub">
+    באפליקציית Shazam: <b>Settings ← Connect to Spotify</b>. אחרי זה כל שיר שמתייגים נכנס אוטומטית
+    לפלייליסט בשם <b>My Shazam Tracks</b> בחשבון ה-Spotify שלך. צריך לעשות את זה פעם אחת בלבד.
+  </p>
+  </details>
+</section>
+
+<section>
+  <details open>
+  <summary>
+    <div class="section-head">
+      <span class="step-num">2</span>
       <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> Spotify</h2>
       <span class="pill" id="pillSpotify">לא מחובר</span>
     </div>
@@ -152,6 +160,8 @@
   <label>Client ID</label>
   <input type="text" id="spotifyClientId" />
   <small class="hint">Redirect URI לרישום ב-Spotify: <code id="redirectUriHint"></code></small>
+  <label>שם הפלייליסט שה-Shazam יוצר (בד"כ לא צריך לשנות)</label>
+  <input type="text" id="shazamPlaylistName" value="My Shazam Tracks" />
   <div style="margin-top:12px;">
     <button id="btnConnectSpotify">התחבר ל-Spotify</button>
   </div>
@@ -160,26 +170,11 @@
 
 <section>
   <div class="section-head">
-    <span class="step-num">2</span>
+    <span class="step-num">3</span>
     <h2>השירים שתייגת ב-Shazam</h2>
   </div>
-  <p class="section-sub">
-    פתח/י את אפליקציית Shazam בטלפון ← <b>My Shazam</b> (הספרייה שלך), והקלידו/העתיקו לכאן שורה לכל שיר,
-    בפורמט <b>שם השיר - אמן</b>. (אם יש לך גם Apple Music מסונכרן עם Shazam, אפשר גם להעתיק את השמות משם -
-    זה חינמי, לא דורש חשבון מפתח, רק מנוי צפייה רגיל אם יש לך.)
-  </p>
-  <textarea id="songInput" placeholder="Blinding Lights - The Weeknd&#10;As It Was - Harry Styles&#10;Flowers - Miley Cyrus"></textarea>
-
-  <label style="margin-top:14px;">או צילומי מסך מ-Shazam (My Shazam) - יזהה טקסט אוטומטית לתוך התיבה למעלה</label>
-  <div id="dropZone" tabindex="0">
-    <span id="dropZoneText">גררו תמונות לכאן, הדביקו עם Ctrl+V, או <span class="dropzone-link">בחרו קובץ</span></span>
-    <input type="file" id="imageInput" accept="image/*" multiple style="display:none;" />
-  </div>
-  <small class="hint">זיהוי הטקסט רץ בדפדפן שלך (Tesseract.js), לא נשלח לשום שרת. הכלי מנסה לסנן כותרות/תאריכים ולזווג שורה ראשונה = שם שיר, שורה שנייה = אמן - זה לא מושלם, כדאי לעבור מהר על התוצאה ולתקן לפני "טען שירים". אם רוצים דיוק גבוה יותר, אפשר גם פשוט לשלוח לי את הצילום בצ'אט ואני אקריא אותו ידנית.</small>
-
-  <div style="margin-top:12px;">
-    <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-  </div>
+  <p class="section-sub">כל שיר מוצג עם כפתור הוספה משלו - לוחצים ומוסיפים אותו ל-Liked Songs ב-Spotify.</p>
+  <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
   <small class="hint" id="loadHint"></small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
@@ -214,112 +209,11 @@ function busy(msg) {
 
 $("redirectUriHint").textContent = location.origin + location.pathname;
 
-// ---------- bounded concurrency helper ----------
-async function mapWithConcurrency(items, limit, worker) {
-  let next = 0;
-  async function run() {
-    while (next < items.length) {
-      const i = next++;
-      await worker(items[i], i);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-}
-
 // ---------- persisted settings ----------
-["spotifyClientId", "songInput"].forEach((id) => {
+["spotifyClientId", "shazamPlaylistName"].forEach((id) => {
   const saved = LS.get("field_" + id, "");
   if (saved) $(id).value = saved;
   $(id).addEventListener("change", () => LS.set("field_" + id, $(id).value));
-});
-
-// ---------- OCR (screenshot -> text) ----------
-let tesseractLoadPromise = null;
-function loadTesseract() {
-  if (window.Tesseract) return Promise.resolve();
-  if (tesseractLoadPromise) return tesseractLoadPromise;
-  tesseractLoadPromise = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("נכשלה טעינת מנוע ה-OCR"));
-    document.head.appendChild(s);
-  });
-  return tesseractLoadPromise;
-}
-
-// Lines that are almost certainly UI chrome / dates / times, not song data.
-const NOISE_LINE_PATTERNS = [
-  /^\d{1,2}:\d{2}\s*(am|pm)?$/i,
-  /^(sun|mon|tue|wed|thu|fri|sat)(day)?$/i,
-  /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(\s+\d{1,2})?(,?\s*\d{4})?$/i,
-  /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/,
-  /^(today|yesterday|this week|last week|this month)$/i,
-  /^(my shazam|shazam|discover|charts|library|search|recently added|sort|edit|home|for you|explore)$/i,
-  /^.{1,2}$/, // 1-2 char noise, usually icons misread
-];
-function isNoiseLine(line) {
-  return NOISE_LINE_PATTERNS.some((re) => re.test(line));
-}
-
-async function processImageFiles(files) {
-  if (!files.length) return;
-  $("imageInput").disabled = true;
-  try {
-    busy("טוען מנוע זיהוי טקסט...");
-    await loadTesseract();
-    const worker = await Tesseract.createWorker("eng");
-    const chunks = [];
-    for (let i = 0; i < files.length; i++) {
-      busy(`מזהה טקסט מתמונה ${i + 1} מתוך ${files.length}...`);
-      const { data: { text } } = await worker.recognize(files[i]);
-      chunks.push(text);
-      log(`זוהה טקסט מתמונה ${i + 1}/${files.length}.`);
-    }
-    await worker.terminate();
-
-    // Shazam's list shows title then artist as two separate lines per song -
-    // drop obvious UI/date noise, then pair up consecutive remaining lines into "title - artist".
-    const rawLines = chunks.join("\n").split("\n").map((l) => l.trim()).filter(Boolean).filter((l) => !isNoiseLine(l));
-    const paired = [];
-    for (let i = 0; i < rawLines.length; i += 2) {
-      paired.push(rawLines[i + 1] ? `${rawLines[i]} - ${rawLines[i + 1]}` : rawLines[i]);
-    }
-    const extracted = paired.join("\n");
-    const existing = $("songInput").value.trim();
-    $("songInput").value = existing ? existing + "\n" + extracted : extracted;
-    LS.set("field_songInput", $("songInput").value);
-    log('הטקסט נוסף לתיבה למעלה - כדאי לבדוק ולתקן (למשל למחוק שורות מיותרות) לפני "טען שירים".');
-  } catch (err) {
-    log("שגיאה בזיהוי טקסט מהתמונה: " + err.message);
-  } finally {
-    busy(null);
-    $("imageInput").disabled = false;
-    $("imageInput").value = "";
-  }
-}
-
-// ---------- drop zone: click / file picker / drag&drop / paste ----------
-const dropZone = $("dropZone");
-dropZone.addEventListener("click", () => $("imageInput").click());
-dropZone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("imageInput").click(); } });
-$("imageInput").addEventListener("change", (e) => processImageFiles(Array.from(e.target.files || [])));
-
-["dragenter", "dragover"].forEach((evt) => {
-  dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
-});
-["dragleave", "drop"].forEach((evt) => {
-  dropZone.addEventListener(evt, (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); });
-});
-dropZone.addEventListener("drop", (e) => {
-  const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type.startsWith("image/"));
-  if (files.length) processImageFiles(files);
-});
-
-window.addEventListener("paste", (e) => {
-  const items = Array.from(e.clipboardData?.items || []);
-  const files = items.filter((it) => it.kind === "file" && it.type.startsWith("image/")).map((it) => it.getAsFile());
-  if (files.length) processImageFiles(files);
 });
 
 // ---------- base64url helpers ----------
@@ -332,7 +226,7 @@ function b64url(bytes) {
 async function sha256(str) { return crypto.subtle.digest("SHA-256", new TextEncoder().encode(str)); }
 
 // ================= Spotify (PKCE) =================
-const SPOTIFY_SCOPE = "user-library-modify user-library-read user-read-private";
+const SPOTIFY_SCOPE = "playlist-read-private user-library-modify user-library-read user-read-private";
 
 function updateSpotifyUi() {
   const tok = LS.get("spotify_token", null);
@@ -416,49 +310,29 @@ async function spotifyApi(path, options = {}) {
   return resp.status === 204 ? null : resp.json();
 }
 
-// ---------- fuzzy matching ----------
-function normalize(text) {
-  return text
-    .replace(/\((feat|ft)\.?[^)]*\)/gi, "")
-    .replace(/(feat|ft)\..*$/i, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-function bigrams(s) {
-  const arr = [];
-  for (let i = 0; i < s.length - 1; i++) arr.push(s.slice(i, i + 2));
-  return arr;
-}
-function similarity(a, b) {
-  const na = normalize(a), nb = normalize(b);
-  if (!na || !nb) return 0;
-  const ba = bigrams(na), bb = bigrams(nb);
-  if (!ba.length || !bb.length) return na === nb ? 1 : 0;
-  const counts = new Map();
-  for (const g of ba) counts.set(g, (counts.get(g) || 0) + 1);
-  let overlap = 0;
-  for (const g of bb) {
-    const c = counts.get(g) || 0;
-    if (c > 0) { overlap++; counts.set(g, c - 1); }
-  }
-  return (2 * overlap) / (ba.length + bb.length);
-}
-function isGoodMatch(name, artist, cName, cArtist, threshold = 0.72) {
-  const nameOk = similarity(name, cName) >= threshold;
-  if (!artist) return nameOk;
-  return nameOk && similarity(artist, cArtist) >= threshold;
-}
-
-async function findSpotifyTrackUri(name, artist) {
-  const q = artist ? `track:${name} artist:${artist}` : `track:${name}`;
-  const res = await spotifyApi(`/search?q=${encodeURIComponent(q)}&type=track&limit=5`);
-  for (const item of res.tracks.items) {
-    const candidateArtist = item.artists[0] ? item.artists[0].name : "";
-    if (isGoodMatch(name, artist, item.name, candidateArtist)) return item.uri;
+async function findPlaylistIdByName(name) {
+  let url = "/me/playlists?limit=50";
+  while (url) {
+    const page = await spotifyApi(url);
+    const found = page.items.find((p) => p.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (found) return found.id;
+    url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
   return null;
+}
+
+async function getPlaylistTracks(playlistId) {
+  const tracks = [];
+  let url = `/playlists/${playlistId}/items?limit=100`;
+  while (url) {
+    const page = await spotifyApi(url);
+    for (const entry of page.items) {
+      const it = entry.item || entry.track;
+      if (it && it.uri) tracks.push({ name: it.name, artist: (it.artists && it.artists[0]) ? it.artists[0].name : "", uri: it.uri });
+    }
+    url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
+  }
+  return tracks;
 }
 
 async function getLikedSongUris() {
@@ -473,15 +347,6 @@ async function getLikedSongUris() {
   return uris;
 }
 
-// ---------- parsing the pasted song list ----------
-function parseSongList(text) {
-  return text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
-    const m = line.match(/^(.*?)\s+[-–—]\s+(.*)$/);
-    if (m) return { name: m[1].trim(), artist: m[2].trim() };
-    return { name: line, artist: "" };
-  });
-}
-
 // ================= Load & render song list =================
 function updateLoadButton() {
   const spotifyReady = !!LS.get("spotify_token", null);
@@ -494,14 +359,13 @@ let songs = []; // { name, artist, uri, inLiked }
 function renderSongList() {
   const el = $("songList");
   if (!songs.length) {
-    el.innerHTML = `<div class="empty-note">אין שירים להצגה. הדביקו רשימה למעלה ולחצו "טען שירים".</div>`;
+    el.innerHTML = `<div class="empty-note">אין שירים להצגה. לחצו "טען שירים".</div>`;
     return;
   }
   el.innerHTML = songs.map((s, i) => {
-    let btn;
-    if (s.inLiked) btn = `<button class="added" disabled data-idx="${i}">✓ כבר ב-Liked Songs</button>`;
-    else if (!s.uri) btn = `<button class="unavailable" disabled data-idx="${i}">לא נמצא ב-Spotify</button>`;
-    else btn = `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
+    const btn = s.inLiked
+      ? `<button class="added" disabled data-idx="${i}">✓ כבר ב-Liked Songs</button>`
+      : `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
     return `<div class="song-row" data-row="${i}">
       <div class="song-info"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
       ${btn}
@@ -535,28 +399,22 @@ async function loadSongs() {
   songs = [];
   renderSongList();
   try {
-    const entries = parseSongList($("songInput").value);
-    if (!entries.length) { log("הדבק/י לפחות שורה אחת עם שם שיר."); return; }
-    log(`נמצאו ${entries.length} שורות. בודק מול Spotify...`);
+    const playlistName = $("shazamPlaylistName").value.trim() || "My Shazam Tracks";
+    busy(`מחפש פלייליסט "${playlistName}"...`);
+    log(`מחפש פלייליסט "${playlistName}"...`);
+    const playlistId = await findPlaylistIdByName(playlistName);
+    if (!playlistId) {
+      log(`לא נמצאה פלייליסט בשם "${playlistName}". ודא שחיברת את Spotify בתוך אפליקציית Shazam (Settings ← Connect to Spotify).`);
+      return;
+    }
+
+    busy("קורא שירים מהפלייליסט...");
+    const tracks = await getPlaylistTracks(playlistId);
+    if (!tracks.length) { log("הפלייליסט ריק - אין עדיין שירים מתויגים."); return; }
+    log(`נמצאו ${tracks.length} שירים בפלייליסט.`);
 
     const likedUris = await getLikedSongUris();
-
-    let completed = 0;
-    const results = new Array(entries.length);
-    await mapWithConcurrency(entries, 5, async (entry, i) => {
-      try {
-        const uri = await findSpotifyTrackUri(entry.name, entry.artist);
-        results[i] = { name: entry.name, artist: entry.artist, uri, inLiked: uri ? likedUris.has(uri) : false };
-      } catch (e) {
-        results[i] = { name: entry.name, artist: entry.artist, uri: null, inLiked: false };
-        log(`  [שגיאה בחיפוש] ${entry.name}: ${e.message}`);
-      } finally {
-        completed++;
-        busy(`בודק שירים מול Spotify... (${completed}/${entries.length})`);
-      }
-    });
-
-    songs = results;
+    songs = tracks.map((t) => ({ name: t.name, artist: t.artist, uri: t.uri, inLiked: likedUris.has(t.uri) }));
     renderSongList();
     log(`מוצגים ${songs.length} שירים.`);
   } catch (e) {
