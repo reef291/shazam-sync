@@ -185,6 +185,7 @@
   <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
   <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי שם אמן)</button>
   <small class="hint" id="loadHint"></small>
+  <small class="hint" id="lastLoadHint"></small>
   <small class="hint">התאמת פלייליסטים היא אופציונלית - לחצו "רענן התאמות פלייליסטים" רק כשתרצו אותה. זה קורא רק את <b>שמות</b> הפלייליסטים שלכם (בקשה אחת קלה, לא סורק את התוכן שלהם) ומחפש שם פלייליסט שמכיל את שם האמן של השיר. התוצאה נשמרת בזיכרון עד שתטענו את הדף מחדש. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
@@ -554,6 +555,14 @@ async function loadMoreSongs() {
   }
 }
 
+function updateLastLoadHint() {
+  $("lastLoadHint").textContent = lastLoadAt
+    ? `עודכן לאחרונה: ${lastLoadAt.toLocaleTimeString("he-IL")} - אם תייגת שיר עכשיו ב-Shazam והוא לא מופיע, תני לו כמה שניות להסתנכרן ולחצי "רענן שירים" שוב.`
+    : "";
+}
+
+let lastLoadAt = null;
+
 async function loadSongs() {
   $("btnLoad").disabled = true;
   songs = [];
@@ -580,6 +589,9 @@ async function loadSongs() {
     await loadMoreSongs(); // loads the first (most recent) PAGE_SIZE songs
     log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
 
+    lastLoadAt = new Date();
+    updateLastLoadHint();
+    $("btnLoad").textContent = "רענן שירים";
     $("btnMatchPlaylists").disabled = false;
     if (playlistNames) {
       renderSongList(); // apply the already-cached index to the newly loaded songs immediately
