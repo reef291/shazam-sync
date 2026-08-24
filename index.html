@@ -130,24 +130,19 @@
     background: transparent; color: var(--muted); border: 1px solid var(--border);
     white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   }
+  .chip { transition: background .18s ease, color .18s ease, border-color .18s ease; }
   .chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); opacity: 1; }
   .chip.on {
     background: color-mix(in srgb, var(--accent2) 18%, transparent);
     color: var(--accent2); border-color: var(--accent2); font-weight: 600;
-    animation: addedPop .35s ease;
   }
-  .chip.on:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
   .chip-like { border-color: var(--border); }
   .chip-like.on {
     background: color-mix(in srgb, #e0245e 18%, transparent);
     color: #e0245e; border-color: #e0245e;
   }
+  .chip-cat.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
   .chips-note { font-size: 0.72rem; color: var(--muted); }
-  @keyframes addedPop {
-    0% { transform: scale(1); }
-    45% { transform: scale(1.15); }
-    100% { transform: scale(1); }
-  }
   .panel {
     background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
     padding: 14px; margin-top: 12px;
@@ -157,6 +152,20 @@
   .pl-row { padding: 8px 4px; border-bottom: 1px solid var(--border); }
   .pl-row:last-child { border-bottom: none; }
   .pl-row-top { display: flex; align-items: center; gap: 8px; }
+  .pl-name {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; margin: 0;
+    background: transparent; border: none; padding: 4px 2px; cursor: pointer;
+    color: var(--text); font-size: 0.86rem; font-weight: 600; text-align: start;
+  }
+  .pl-name:hover { color: var(--accent); opacity: 1; }
+  .pl-caret { color: var(--muted); font-size: 0.75rem; flex-shrink: 0; }
+  .pl-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-pattern {
+    font-size: 0.73rem; color: var(--muted); cursor: pointer;
+    padding: 0 2px 2px 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pl-pattern:hover { color: var(--accent); }
+  .pl-detail { padding: 8px 2px 4px; }
   .pl-desc {
     width: 100%; margin-top: 5px; padding: 5px 8px; border-radius: 7px;
     border: 1px solid var(--border); background: var(--card); color: var(--text);
@@ -172,12 +181,6 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 9px;
     padding: 10px 12px; margin: 10px 0; font-size: 0.8rem; line-height: 1.6;
     max-height: 180px; overflow-y: auto;
-  }
-  .song-row.reverted { animation: revertPop .45s ease; }
-  @keyframes revertPop {
-    0% { transform: scale(1); opacity: 1; }
-    40% { transform: scale(0.94); opacity: 0.5; }
-    100% { transform: scale(1); opacity: 1; }
   }
   .empty-note { color: var(--muted); font-size: 0.85rem; padding: 10px 2px; text-align: center; }
 
@@ -411,17 +414,44 @@ async function getPlaylistTotal(playlistId) {
 async function getPlaylistTracksPage(playlistId, offset, limit) {
   // Request both "item" (current field name) and "track" (older/deprecated name) since which one
   // the API actually populates has changed over time - asking for only one silently returns nothing if wrong.
-  const fields = encodeURIComponent("items(item(name,artists,uri),track(name,artists,uri)),next");
+  const fields = encodeURIComponent("items(item(name,artists(name,id),uri),track(name,artists(name,id),uri)),next");
   const data = await spotifyApi(`/playlists/${playlistId}/items?limit=${limit}&offset=${offset}&fields=${fields}`);
   return (data.items || []).map((entry) => {
     const it = entry.item || entry.track;
     if (!it || !it.uri) return null;
+    const first = (it.artists && it.artists[0]) ? it.artists[0] : null;
     return {
       name: it.name,
-      artist: (it.artists && it.artists[0]) ? it.artists[0].name : "",
+      artist: first ? first.name : "",
+      artistId: first ? first.id : null,
       uri: it.uri,
     };
   }).filter(Boolean);
+}
+
+// Spotify tags genres on the ARTIST, not the track. One batched call covers up to 50 artists, so
+// enriching a 10-song page costs a single request - and results are cached across sessions since
+// an artist's genres barely change. This is what makes "ראפ" / "ספרדית" / "רוק" real matches
+// instead of guesses from the song title.
+let artistGenres = LS.get("artist_genres", {});
+
+async function enrichWithGenres(songList) {
+  const missing = [...new Set(songList.map((s) => s.artistId).filter((id) => id && !artistGenres[id]))];
+  for (let i = 0; i < missing.length; i += 50) {
+    const batch = missing.slice(i, i + 50);
+    try {
+      const data = await spotifyApi(`/artists?ids=${batch.join(",")}`);
+      (data.artists || []).forEach((a) => {
+        if (a && a.id) artistGenres[a.id] = (a.genres || []).map((g) => g.toLowerCase());
+      });
+      batch.forEach((id) => { if (!artistGenres[id]) artistGenres[id] = []; });
+    } catch (e) {
+      log(`לא ניתן לקרוא סגנונות מוזיקליים (${e.message}) - ההתאמה תתבסס על שמות בלבד.`);
+      break;
+    }
+  }
+  try { LS.set("artist_genres", artistGenres); } catch (e) { /* quota - harmless, refetched later */ }
+  songList.forEach((s) => { s.genres = (s.artistId && artistGenres[s.artistId]) || []; });
 }
 
 // Batched "is this saved to Liked Songs" check - avoids downloading the entire liked library.
@@ -528,38 +558,86 @@ function matchPlaylistsByArtist(artist, playlistNames) {
   });
 }
 
-// Hebrew vs. Latin script is the one language signal we can read directly off the song/artist
-// text with zero extra API calls - good enough for the "עברית"/"hebrew" style buckets people
-// actually name playlists with.
-const HEBREW_KEYWORDS = ["עברית", "עברי", "hebrew", "ישראלי", "ישראלית"];
-const ENGLISH_KEYWORDS = ["english", "אנגלית", "לועזי", "foreign"];
+// ---------- playlist categories ----------
+// Each category knows two things: the words in a PLAYLIST name that imply it (nameTerms), and how
+// to tell whether a SONG belongs to it - either by the script its title/artist is written in, or
+// by the genre tags Spotify puts on the artist. That split is what lets the tool read a playlist
+// called "ראפ" or "ספרדית" and match songs to it without the user explaining anything.
+const PLAYLIST_CATEGORIES = [
+  { id: "hebrew", label: "עברית", nameTerms: ["עברית", "עברי", "ישראלי", "ישראלית", "hebrew", "israeli"], script: "hebrew" },
+  { id: "foreign", label: "לועזי/אנגלית", nameTerms: ["אנגלית", "לועזי", "לועזית", "english", "foreign"], script: "latin" },
+  { id: "spanish", label: "ספרדית/לטינית", nameTerms: ["ספרדית", "לטינית", "spanish", "latin", "latino", "reggaeton", "רגאטון", "סלסה", "salsa"], genres: ["latin", "reggaeton", "spanish", "salsa", "bachata", "flamenco", "cumbia", "tango"] },
+  { id: "french", label: "צרפתית", nameTerms: ["צרפתית", "french", "francais", "français"], genres: ["french", "chanson"] },
+  { id: "arabic", label: "ערבית", nameTerms: ["ערבית", "arabic", "arab"], genres: ["arab"], script: "arabic" },
+  { id: "russian", label: "רוסית", nameTerms: ["רוסית", "russian"], genres: ["russian"], script: "cyrillic" },
+  { id: "rap", label: "ראפ/היפ-הופ", nameTerms: ["ראפ", "rap", "hip hop", "hip-hop", "hiphop", "היפ הופ", "היפ-הופ", "טראפ", "trap"], genres: ["rap", "hip hop", "trap", "drill", "grime"] },
+  { id: "black", label: "מוזיקה שחורה", nameTerms: ["שחורה", "שחור", "black", "rnb", "r&b", "soul", "funk", "motown"], genres: ["r&b", "soul", "funk", "motown", "neo soul", "hip hop", "rap", "afrobeat"] },
+  { id: "rock", label: "רוק", nameTerms: ["רוק", "rock", "מטאל", "metal", "פאנק", "punk", "גראנג'", "grunge"], genres: ["rock", "metal", "punk", "grunge", "alternative", "indie"] },
+  { id: "electronic", label: "אלקטרוני", nameTerms: ["אלקטרוני", "אלקטרונית", "electronic", "טכנו", "techno", "האוס", "house", "edm", "טראנס", "trance", "dubstep"], genres: ["electro", "techno", "house", "edm", "trance", "dubstep", "dance"] },
+  { id: "pop", label: "פופ", nameTerms: ["פופ", "pop"], genres: ["pop"] },
+  { id: "mizrahi", label: "מזרחית", nameTerms: ["מזרחית", "מזרחי", "ים תיכוני", "mizrahi"], genres: ["mizrahi", "mediterranean"] },
+  { id: "jazz", label: "ג'אז/בלוז", nameTerms: ["ג'אז", "גאז", "jazz", "בלוז", "blues"], genres: ["jazz", "blues", "bossa", "swing"] },
+  { id: "classical", label: "קלאסי", nameTerms: ["קלאסי", "קלאסית", "classical"], genres: ["classical", "opera", "baroque", "orchestra"] },
+  { id: "country", label: "קאנטרי/פולק", nameTerms: ["קאנטרי", "country", "folk", "פולק"], genres: ["country", "folk", "americana", "bluegrass"] },
+  { id: "reggae", label: "רגאיי", nameTerms: ["רגאיי", "רגאי", "reggae", "ska"], genres: ["reggae", "ska", "dancehall"] },
+  { id: "workout", label: "אימון/כושר", nameTerms: ["אימון", "כושר", "ריצה", "ספורט", "workout", "gym", "running", "fitness", "cardio", "pump"], genres: ["workout", "edm", "dance", "power"] },
+  { id: "chill", label: "רגוע/שקט", nameTerms: ["שקט", "שקטים", "רגוע", "chill", "calm", "relax", "sleep", "שינה", "אקוסטי", "acoustic"], genres: ["chill", "ambient", "acoustic", "lo-fi", "lofi", "singer-songwriter"] },
+  { id: "party", label: "מסיבה/ריקודים", nameTerms: ["מסיבה", "מסיבות", "party", "dance", "ריקוד", "ריקודים", "חתונה", "dj"], genres: ["dance", "party", "edm", "house", "disco"] },
+  { id: "oldies", label: "ישן/נוסטלגיה", nameTerms: ["ישן", "ישנים", "נוסטלג", "רטרו", "retro", "oldies", "classics", "קלאסיקות"], genres: ["classic", "oldies", "60s", "70s", "80s", "90s"] },
+  { id: "kids", label: "ילדים", nameTerms: ["ילדים", "kids", "children", "פעוטות"], genres: ["children", "kids"] },
+];
 
-function detectLanguageBucket(text) {
+const CATEGORY_BY_ID = Object.fromEntries(PLAYLIST_CATEGORIES.map((c) => [c.id, c]));
+
+function detectScript(text) {
   if (/[֐-׿]/.test(text)) return "hebrew";
-  if (/[A-Za-z]/.test(text)) return "english";
+  if (/[؀-ۿ]/.test(text)) return "arabic";
+  if (/[Ѐ-ӿ]/.test(text)) return "cyrillic";
+  if (/[A-Za-z]/.test(text)) return "latin";
   return null;
 }
 
-function matchPlaylistsByLanguage(song, playlistNames) {
-  const bucket = detectLanguageBucket(`${song.name} ${song.artist}`);
-  const keywords = bucket === "hebrew" ? HEBREW_KEYWORDS : bucket === "english" ? ENGLISH_KEYWORDS : [];
-  if (!keywords.length) return [];
-  return playlistNames.filter((p) => {
-    const haystack = `${p.name} ${playlistMeta[p.id] || ""}`.toLowerCase();
-    return keywords.some((k) => haystack.includes(k));
-  });
+// Reads a playlist's name and returns the category ids it implies. This is the "understand from
+// the name what you safely can" part - it only fires on explicit words, never guesses.
+function detectCategoriesFromName(name) {
+  const n = (name || "").toLowerCase();
+  return PLAYLIST_CATEGORIES.filter((c) => c.nameTerms.some((t) => n.includes(t))).map((c) => c.id);
 }
 
-// Matches against the description the user wrote for a playlist. This is the part that can
-// actually capture meaning the tool has no way to infer on its own ("שקט", "רוק ישראלי",
-// specific artist names) - the user supplies the semantics, comma- or newline-separated, and a
-// playlist matches if any term appears in the song title or artist.
-function matchPlaylistsByDescription(song, playlistNames) {
+// playlistMeta entries are { cats: [ids], terms: "free text" }. Older versions stored a bare
+// string, so normalize on read rather than migrating destructively.
+function getMeta(playlistId) {
+  const raw = playlistMeta[playlistId];
+  if (!raw) return { cats: [], terms: "" };
+  if (typeof raw === "string") return { cats: [], terms: raw };
+  return { cats: raw.cats || [], terms: raw.terms || "" };
+}
+function setMeta(playlistId, meta) {
+  playlistMeta[playlistId] = { cats: meta.cats, terms: meta.terms };
+  LS.set("playlist_meta", playlistMeta);
+}
+
+function songMatchesCategory(song, catId) {
+  const cat = CATEGORY_BY_ID[catId];
+  if (!cat) return false;
+  if (cat.script && detectScript(`${song.name} ${song.artist}`) === cat.script) return true;
+  if (cat.genres && song.genres && song.genres.length) {
+    if (song.genres.some((g) => cat.genres.some((cg) => g.includes(cg)))) return true;
+  }
+  return false;
+}
+
+function matchPlaylistsByCategory(song, playlistNames) {
+  return playlistNames.filter((p) => getMeta(p.id).cats.some((catId) => songMatchesCategory(song, catId)));
+}
+
+// Free-text terms the user typed for a playlist, matched against the song title/artist.
+function matchPlaylistsByTerms(song, playlistNames) {
   const songText = `${song.name} ${song.artist}`.toLowerCase();
   return playlistNames.filter((p) => {
-    const desc = playlistMeta[p.id];
-    if (!desc) return false;
-    return desc
+    const terms = getMeta(p.id).terms;
+    if (!terms) return false;
+    return terms
       .split(/[,\n;|]+/)
       .map((t) => t.trim().toLowerCase())
       .filter((t) => t.length >= 2)
@@ -567,13 +645,13 @@ function matchPlaylistsByDescription(song, playlistNames) {
   });
 }
 
-// Combines artist-name, language-bucket and user-description matches, de-duplicated by id.
+// Combines artist-name, category and free-term matches, de-duplicated by id.
 function matchPlaylistsForSong(song, playlistNames) {
   const byId = new Map();
   [
     ...matchPlaylistsByArtist(song.artist, playlistNames),
-    ...matchPlaylistsByLanguage(song, playlistNames),
-    ...matchPlaylistsByDescription(song, playlistNames),
+    ...matchPlaylistsByCategory(song, playlistNames),
+    ...matchPlaylistsByTerms(song, playlistNames),
   ].forEach((p) => byId.set(p.id, p));
   return [...byId.values()];
 }
@@ -584,8 +662,9 @@ function matchReasons(song, playlist) {
   const one = [playlist];
   const reasons = [];
   if (matchPlaylistsByArtist(song.artist, one).length) reasons.push("שם האמן");
-  if (matchPlaylistsByLanguage(song, one).length) reasons.push("שפה");
-  if (matchPlaylistsByDescription(song, one).length) reasons.push("התיאור שהגדרת");
+  const cats = getMeta(playlist.id).cats.filter((c) => songMatchesCategory(song, c));
+  cats.forEach((c) => reasons.push(CATEGORY_BY_ID[c].label));
+  if (matchPlaylistsByTerms(song, one).length) reasons.push("מילה שהגדרת");
   return reasons;
 }
 
@@ -657,6 +736,7 @@ function saveLastRun() { LS.set("last_auto_add_run", lastRunAdds); }
 
 let alsoLikeChecked = false;
 let playlistListOpen = false;
+let expandedPlaylistIds = new Set();
 
 // Real playlist membership when we have it, falling back to our own add-log when we don't.
 // Actual membership is the better answer: it also knows about songs the user added by hand.
@@ -690,10 +770,11 @@ function updateAutoAddPreview() {
   if (box) {
     box.innerHTML = totalAdds
       ? `יתווספו <b>${totalAdds}</b> הוספות עבור <b>${preview.length}</b> שירים:<br>` +
-        preview.map((r) => `• ${esc(r.song.name)} ← ` + r.matches.map((m) =>
+        preview.slice(0, 6).map((r) => `• ${esc(r.song.name)} ← ` + r.matches.map((m) =>
           `${esc(m.name)} <span style="opacity:.65">(${esc(matchReasons(r.song, m).join(" + ") || "התאמה")})</span>`
-        ).join(", ")).join("<br>")
-      : "אין התאמות חדשות לשירים הטעונים כרגע. אפשר להגדיר תיאור לפלייליסטים למעלה כדי לשפר את ההתאמה.";
+        ).join(", ")).join("<br>") +
+        (preview.length > 6 ? `<br>...ועוד ${preview.length - 6} שירים` : "")
+      : "אין התאמות חדשות לשירים הטעונים כרגע. אפשר לפתוח פלייליסט למעלה ולהגדיר לו דפוס.";
   }
 
   const runBtn = $("btnRunAutoAdd");
@@ -711,25 +792,52 @@ function renderAutoAddPanel() {
   const el = $("autoAddPanel");
   if (!playlistNames) { el.innerHTML = ""; return; }
 
+  // Playlists that would receive something are listed first and marked, so the ones that matter
+  // are visible without scrolling a long list.
+  const pendingByPlaylist = {};
+  previewAutoAdd().forEach((r) => r.matches.forEach((m) => { pendingByPlaylist[m.id] = (pendingByPlaylist[m.id] || 0) + 1; }));
+  const ordered = [...playlistNames].sort((a, b) => (pendingByPlaylist[b.id] || 0) - (pendingByPlaylist[a.id] || 0));
+
   el.innerHTML = `
     <div class="panel">
       <div class="panel-title">הוספה אוטומטית לפלייליסטים</div>
+      <div class="chips-note" style="line-height:1.6; margin-bottom:8px;">
+        לכל פלייליסט זוהה <b>דפוס</b> לפי השם שלו. לחיצה על שם פלייליסט פותחת אותו לעריכה -
+        אפשר להוסיף או להסיר קטגוריות ולכתוב מילים משלך. ✓ ירוק = יתווספו שירים לפלייליסט הזה.
+      </div>
       <details class="log-details" ${playlistListOpen ? "open" : ""}>
         <summary id="plSummary"></summary>
         <div class="pl-list">
-          ${playlistNames.map((p) => {
+          ${ordered.map((p) => {
+            const meta = getMeta(p.id);
             const inCount = songs.filter((s) => isInPlaylist(s.uri, p.id)).length;
+            const pending = pendingByPlaylist[p.id] || 0;
+            const catLabels = meta.cats.map((c) => CATEGORY_BY_ID[c] && CATEGORY_BY_ID[c].label).filter(Boolean);
+            const patternText = catLabels.concat(meta.terms ? [meta.terms] : []).join(" · ") || "לא זוהה דפוס - לחצו להגדרה";
             return `
             <div class="pl-row">
               <div class="pl-row-top">
-                <label class="pl-item" style="flex:1; min-width:0;">
-                  <input type="checkbox" data-scope="${esc(p.id)}" ${excludedPlaylistIds.has(p.id) ? "" : "checked"} />
-                  <span style="overflow:hidden; text-overflow:ellipsis;">${esc(p.name)}</span>
-                </label>
-                ${inCount ? `<button class="chip" data-bulkremove="${esc(p.id)}" title="הסרת השיר מכל השירים הטעונים שנמצאים בפלייליסט הזה">הסר מ-${inCount}</button>` : `<span class="chips-note">0 מהטעונים</span>`}
+                <input type="checkbox" data-scope="${esc(p.id)}" ${excludedPlaylistIds.has(p.id) ? "" : "checked"} title="לכלול בהוספה האוטומטית" />
+                <button class="pl-name" data-expand="${esc(p.id)}">
+                  <span class="pl-caret">${expandedPlaylistIds.has(p.id) ? "▾" : "▸"}</span>
+                  <span class="pl-name-text">${esc(p.name)}</span>
+                </button>
+                ${pending ? `<span class="pill on">+${pending}</span>` : ""}
               </div>
-              <input type="text" class="pl-desc" data-desc="${esc(p.id)}" value="${esc(playlistMeta[p.id] || "")}"
-                placeholder="מה נכנס לפלייליסט הזה? מילים מופרדות בפסיק - למשל: רוק, כוורת, שלמה ארצי" />
+              <div class="pl-pattern" data-expand="${esc(p.id)}">${esc(patternText)}</div>
+              ${expandedPlaylistIds.has(p.id) ? `
+                <div class="pl-detail">
+                  <div class="chips" style="margin-bottom:6px;">
+                    ${PLAYLIST_CATEGORIES.map((c) => `
+                      <button class="chip chip-cat${meta.cats.includes(c.id) ? " on" : ""}" data-cat="${esc(c.id)}" data-catpl="${esc(p.id)}">${esc(c.label)}</button>
+                    `).join("")}
+                  </div>
+                  <input type="text" class="pl-desc" data-desc="${esc(p.id)}" value="${esc(meta.terms)}"
+                    placeholder="מילים משלך, מופרדות בפסיק - למשל: כוורת, שלמה ארצי" />
+                  <div style="margin-top:6px;">
+                    ${inCount ? `<button class="chip" data-bulkremove="${esc(p.id)}">הסר את ${inCount} השירים הטעונים מהפלייליסט</button>` : `<span class="chips-note">אף אחד מהשירים הטעונים לא נמצא כאן</span>`}
+                  </div>
+                </div>` : ""}
             </div>`;
           }).join("")}
         </div>
@@ -741,11 +849,20 @@ function renderAutoAddPanel() {
       <div class="preview-box" id="previewBox"></div>
       <div>
         <button id="btnRunAutoAdd" class="primary-big">בצע הוספה</button>
+        <button id="btnSaveSettings" class="secondary">שמור ועדכן רשימה</button>
         ${lastRunAdds.length ? `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>` : ""}
       </div>
     </div>`;
 
   el.querySelector("details").addEventListener("toggle", (e) => { playlistListOpen = e.target.open; });
+  el.querySelectorAll("[data-expand]").forEach((node) => {
+    node.addEventListener("click", () => {
+      const id = node.dataset.expand;
+      if (expandedPlaylistIds.has(id)) expandedPlaylistIds.delete(id);
+      else expandedPlaylistIds.add(id);
+      renderAutoAddPanel();
+    });
+  });
   el.querySelectorAll("input[data-scope]").forEach((cb) => {
     cb.addEventListener("change", () => {
       if (cb.checked) excludedPlaylistIds.delete(cb.dataset.scope);
@@ -754,13 +871,23 @@ function renderAutoAddPanel() {
       updateAutoAddPreview();
     });
   });
-  // Saved on input (not on blur) so a description typed and immediately acted on isn't lost.
+  el.querySelectorAll("button[data-cat]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pid = btn.dataset.catpl;
+      const meta = getMeta(pid);
+      const idx = meta.cats.indexOf(btn.dataset.cat);
+      if (idx >= 0) meta.cats.splice(idx, 1);
+      else meta.cats.push(btn.dataset.cat);
+      setMeta(pid, meta);
+      renderAutoAddPanel();
+    });
+  });
+  // Saved on input (not on blur) so text typed and immediately acted on isn't lost.
   el.querySelectorAll("input[data-desc]").forEach((inp) => {
     inp.addEventListener("input", () => {
-      const val = inp.value.trim();
-      if (val) playlistMeta[inp.dataset.desc] = val;
-      else delete playlistMeta[inp.dataset.desc];
-      LS.set("playlist_meta", playlistMeta);
+      const meta = getMeta(inp.dataset.desc);
+      meta.terms = inp.value.trim();
+      setMeta(inp.dataset.desc, meta);
       updateAutoAddPreview();
     });
   });
@@ -769,6 +896,12 @@ function renderAutoAddPanel() {
   });
   $("alsoLikeCheckbox").addEventListener("change", (e) => { alsoLikeChecked = e.target.checked; });
   $("btnRunAutoAdd").addEventListener("click", confirmAndRunAutoAdd);
+  $("btnSaveSettings").addEventListener("click", () => {
+    LS.set("playlist_meta", playlistMeta);
+    LS.set("excluded_playlist_ids", [...excludedPlaylistIds]);
+    renderAutoAddPanel();
+    log("ההגדרות נשמרו והרשימה עודכנה.");
+  });
   const undoBtn = $("btnUndoAutoAdd");
   if (undoBtn) undoBtn.addEventListener("click", undoLastAutoAddRun);
 
@@ -785,7 +918,6 @@ async function bulkRemoveFromPlaylist(playlistId) {
 
   const affected = songs.filter((s) => set.has(s.uri));
   if (!affected.length) return;
-  if (!confirm(`להסיר ${affected.length} מהשירים הטעונים מהפלייליסט "${p.name}"?\n\n${affected.map((s) => "• " + s.name).join("\n")}\n\nשאר השירים בפלייליסט לא ייגעו.`)) return;
 
   log(`מסיר ${affected.length} שירים מ"${p.name}"...`);
   const uris = [...new Set(affected.map((s) => s.uri))];
@@ -819,7 +951,6 @@ async function undoLastAutoAddRun() {
   // Highest position first, so removing one doesn't shift the position of another one still
   // pending in the same playlist within this same undo batch.
   const sorted = [...toUndo].sort((a, b) => b.position - a.position);
-  const revertedUris = new Set();
   for (const entry of sorted) {
     try {
       await spotifyApi(`/playlists/${entry.playlistId}/tracks`, {
@@ -828,21 +959,14 @@ async function undoLastAutoAddRun() {
       });
       forgetAutoAdd(entry.uri, entry.playlistId);
       const undoSet = playlistUriSet(entry.playlistId);
-      if (undoSet) { undoSet.delete(entry.uri); saveMembershipCache(playlistTracks); }
-      revertedUris.add(entry.uri);
+      if (undoSet) undoSet.delete(entry.uri);
       log(`הוסר "${entry.songName}" מהפלייליסט "${entry.playlistName}".`);
     } catch (e) {
       log(`שגיאה בהסרת "${entry.songName}" מ"${entry.playlistName}": ${e.message}`);
     }
   }
-  // Flag the affected rows so renderSongList() plays a brief "back to normal" animation on them,
-  // then clear the flag shortly after so it doesn't replay on later, unrelated re-renders.
-  songs.forEach((s) => { if (revertedUris.has(s.uri)) s.justReverted = true; });
+  saveMembershipCache(playlistTracks);
   renderSongList();
-  setTimeout(() => {
-    songs.forEach((s) => { if (revertedUris.has(s.uri)) s.justReverted = false; });
-    renderSongList();
-  }, 450);
   renderAutoAddPanel(); // the undone songs become eligible again, so the preview count changes
   log("הביטול הושלם.");
 }
@@ -874,7 +998,7 @@ function renderSongList() {
       }).join("");
     }
 
-    return `<div class="song-row${s.justReverted ? " reverted" : ""}" data-row="${i}">
+    return `<div class="song-row" data-row="${i}">
       <div class="song-top">
         <div class="song-info">
           <div class="song-note">🎵</div>
@@ -922,7 +1046,6 @@ async function toggleLiked(idx) {
   const s = songs[idx];
   if (s.likedPending) return;
   const removing = s.inLiked;
-  if (removing && !confirm(`להסיר את "${s.name}" מ-Liked Songs?`)) return;
 
   s.likedPending = true;
   renderSongList();
@@ -950,7 +1073,6 @@ async function togglePlaylistMembership(idx, playlistId) {
   if (s.pendingPlaylists.has(playlistId)) return;
 
   const removing = set.has(s.uri);
-  if (removing && !confirm(`להסיר את "${s.name}" מהפלייליסט "${p.name}"?`)) return;
 
   s.pendingPlaylists.add(playlistId);
   renderSongList();
@@ -1045,6 +1167,17 @@ async function scanForMatches() {
     playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
     LS.set("playlist_names", playlistNames);
     playlistTracks = await refreshPlaylistMembership(playlistNames, playlistTracks || new Map());
+
+    // Fill in a pattern for any playlist the user hasn't configured yet, read straight off its
+    // name. Never overwrites something already set - the user's own edits always win.
+    let detected = 0;
+    playlistNames.forEach((p) => {
+      if (playlistMeta[p.id]) return;
+      const cats = detectCategoriesFromName(p.name);
+      if (cats.length) { setMeta(p.id, { cats, terms: "" }); detected++; }
+    });
+    if (detected) log(`זוהה דפוס אוטומטי ל-${detected} פלייליסטים לפי השם שלהם - אפשר לערוך בלחיצה על שם הפלייליסט.`);
+
     playlistListOpen = true;
     renderSongList();
     renderAutoAddPanel();
@@ -1109,6 +1242,14 @@ async function loadMoreSongs() {
       likedFlags = rawTracks.map(() => false);
     }
     const newSongs = rawTracks.map((t, i) => ({ ...t, inLiked: !!likedFlags[i] }));
+
+    // Genre lookup is one cheap batched call and drives most of the category matching, so it runs
+    // as part of loading rather than being another button the user has to find.
+    try {
+      await enrichWithGenres(newSongs);
+    } catch (e) {
+      log(`דילוג על קריאת סגנונות: ${e.message}`);
+    }
 
     songs = songs.concat(newSongs);
     loadedFromEnd += batchSize;
