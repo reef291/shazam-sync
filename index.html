@@ -422,15 +422,26 @@ function renderSongList() {
     return;
   }
   el.innerHTML = songs.map((s, i) => {
-    const addBtn = s.inLiked
-      ? `<button class="added" disabled data-idx="${i}">✓ כבר ב-Liked Songs</button>`
-      : `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
+    let addBtn;
+    if (s.inLiked || s.added) {
+      addBtn = `<button class="added" disabled data-idx="${i}">✓ ${s.added ? "התווסף" : "כבר ב-Liked Songs"}</button>`;
+    } else if (s.adding) {
+      addBtn = `<button disabled data-idx="${i}">מוסיף...</button>`;
+    } else {
+      addBtn = `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
+    }
 
     let matchBtn = "";
-    const match = playlistNames ? matchPlaylistsForArtist(s.artist, playlistNames) : null;
-    if (match && match.length) {
-      const target = match[0];
-      matchBtn = `<button class="btn-add-playlist secondary" data-idx="${i}" data-pid="${target.id}" data-pname="${target.name.replace(/"/g, "&quot;")}">+ ל-${target.name}</button>`;
+    if (s.playlistAdded) {
+      matchBtn = `<button class="added" disabled data-idx="${i}">✓ התווסף ל-${s.playlistAddedName}</button>`;
+    } else if (s.playlistAdding) {
+      matchBtn = `<button disabled data-idx="${i}">מוסיף...</button>`;
+    } else {
+      const match = playlistNames ? matchPlaylistsForArtist(s.artist, playlistNames) : null;
+      if (match && match.length) {
+        const target = match[0];
+        matchBtn = `<button class="btn-add-playlist secondary" data-idx="${i}" data-pid="${target.id}" data-pname="${target.name.replace(/"/g, "&quot;")}">+ ל-${target.name}</button>`;
+      }
     }
 
     return `<div class="song-row" data-row="${i}">
@@ -442,46 +453,50 @@ function renderSongList() {
     : (totalTracks ? `<div class="empty-note">מוצגים כל ${totalTracks} השירים.</div>` : ""));
 
   el.querySelectorAll(".btn-add-one").forEach((btn) => {
-    btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx), btn));
+    btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx)));
   });
   el.querySelectorAll(".btn-add-playlist").forEach((btn) => {
-    btn.addEventListener("click", () => addSongToPlaylist(Number(btn.dataset.idx), btn.dataset.pid, btn.dataset.pname, btn));
+    btn.addEventListener("click", () => addSongToPlaylist(Number(btn.dataset.idx), btn.dataset.pid, btn.dataset.pname));
   });
 }
 
-async function addOneSong(idx, btn) {
+// Add-in-progress/added state lives on the song object itself (not on the clicked DOM node),
+// so it survives a full renderSongList() rebuild triggered by infinite scroll while this request
+// is still in flight - otherwise the completion handler was updating a button already detached
+// from the page, and the freshly rendered one never picked up the new state.
+async function addOneSong(idx) {
   const s = songs[idx];
-  btn.disabled = true;
-  btn.textContent = "מוסיף...";
+  if (s.adding || s.inLiked || s.added) return;
+  s.adding = true;
+  renderSongList();
   try {
     await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: "PUT" });
-    s.inLiked = true;
-    btn.className = "added";
-    btn.textContent = "✓ התווסף";
+    s.adding = false;
+    s.added = true;
     log(`נוסף: ${s.name} - ${s.artist}`);
   } catch (e) {
+    s.adding = false;
     log(`שגיאה בהוספת "${s.name}": ${e.message}`);
-    btn.disabled = false;
-    btn.className = "btn-add-one";
-    btn.textContent = "+ הוסף";
   }
+  renderSongList();
 }
 
-async function addSongToPlaylist(idx, playlistId, playlistName, btn) {
+async function addSongToPlaylist(idx, playlistId, playlistName) {
   const s = songs[idx];
-  btn.disabled = true;
-  btn.textContent = "מוסיף...";
+  if (s.playlistAdding || s.playlistAdded) return;
+  s.playlistAdding = true;
+  renderSongList();
   try {
     await spotifyApi(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
-    btn.className = "added";
-    btn.textContent = `✓ התווסף ל-${playlistName}`;
+    s.playlistAdding = false;
+    s.playlistAdded = true;
+    s.playlistAddedName = playlistName;
     log(`נוסף "${s.name}" לפלייליסט "${playlistName}".`);
   } catch (e) {
+    s.playlistAdding = false;
     log(`שגיאה בהוספה לפלייליסט "${playlistName}": ${e.message}`);
-    btn.disabled = false;
-    btn.className = "btn-add-playlist secondary";
-    btn.textContent = `+ ל-${playlistName}`;
   }
+  renderSongList();
 }
 
 async function findMatchingPlaylists() {
