@@ -182,6 +182,7 @@
     <div class="songs-actions">
       <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
       <button id="btnMatchPlaylists" class="secondary" disabled title="קורא את שמות הפלייליסטים שלך, ומוסיף כל שיר לפלייליסטים מתאימים לפי אמן ושפה - אוטומטית">הוסף אוטומטית לפלייליסטים מתאימים</button>
+      <span id="undoAutoAddWrap"></span>
     </div>
   </div>
   <small class="hint" id="loadHint"></small>
@@ -455,6 +456,61 @@ let lastLoadFailureAt = 0;
 const LOAD_FAILURE_COOLDOWN_MS = 15000;
 const PAGE_SIZE = 25;
 
+// Persistent record of every auto-add the tool has made: [{uri, playlistId, playlistName, position}].
+// Keyed by track URI (not by index into `songs`) and saved to localStorage, so it survives page
+// reloads AND correctly recognizes the same track appearing twice in the Shazam playlist (a
+// duplicate tag) - both were ways the old per-song-object tracking let the same song get added
+// to the same playlist more than once.
+let autoAddLog = LS.get("auto_playlist_adds", []);
+
+function getAutoAddedForUri(uri) {
+  return autoAddLog.filter((e) => e.uri === uri).map((e) => ({ id: e.playlistId, name: e.playlistName }));
+}
+function recordAutoAdd(uri, playlistId, playlistName, position) {
+  autoAddLog.push({ uri, playlistId, playlistName, position });
+  LS.set("auto_playlist_adds", autoAddLog);
+}
+function forgetAutoAdd(uri, playlistId) {
+  autoAddLog = autoAddLog.filter((e) => !(e.uri === uri && e.playlistId === playlistId));
+  LS.set("auto_playlist_adds", autoAddLog);
+}
+
+let lastRunAdds = []; // entries from the most recent explicit "הוסף אוטומטית" run, for the undo button
+
+function renderUndoButton() {
+  const wrap = $("undoAutoAddWrap");
+  if (!lastRunAdds.length) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>`;
+  $("btnUndoAutoAdd").addEventListener("click", undoLastAutoAddRun);
+}
+
+// Removes exactly the tracks the last run added, and only those - by the exact position each one
+// was inserted at, not just by URI - so a song that was already in that playlist before the
+// auto-add (added there by hand, separately) never gets swept up in the undo.
+async function undoLastAutoAddRun() {
+  const toUndo = lastRunAdds;
+  lastRunAdds = [];
+  renderUndoButton();
+  log(`מבטל ${toUndo.length} הוספות מהריצה האחרונה...`);
+  // Highest position first, so removing one doesn't shift the position of another one still
+  // pending in the same playlist within this same undo batch.
+  const sorted = [...toUndo].sort((a, b) => b.position - a.position);
+  for (const entry of sorted) {
+    try {
+      await spotifyApi(`/playlists/${entry.playlistId}/tracks`, {
+        method: "DELETE",
+        body: JSON.stringify({ tracks: [{ uri: entry.uri, positions: [entry.position] }] }),
+      });
+      forgetAutoAdd(entry.uri, entry.playlistId);
+      log(`הוסר "${entry.songName}" מהפלייליסט "${entry.playlistName}".`);
+    } catch (e) {
+      log(`שגיאה בהסרת "${entry.songName}" מ"${entry.playlistName}": ${e.message}`);
+    }
+  }
+  renderSongList();
+  log("הביטול הושלם.");
+}
+
 function renderSongList() {
   const el = $("songList");
   if (!songs.length) {
@@ -474,9 +530,12 @@ function renderSongList() {
     let matchBadge = "";
     if (s.autoAddPending) {
       matchBadge = `<span class="pill">מוסיף לפלייליסטים...</span>`;
-    } else if (s.autoPlaylistsAdded && s.autoPlaylistsAdded.length) {
-      const names = s.autoPlaylistsAdded.map((p) => p.name).join(", ");
-      matchBadge = `<span class="pill on" title="${names.replace(/"/g, "&quot;")}">✓ ${names}</span>`;
+    } else {
+      const added = getAutoAddedForUri(s.uri);
+      if (added.length) {
+        const names = added.map((p) => p.name).join(", ");
+        matchBadge = `<span class="pill on" title="${names.replace(/"/g, "&quot;")}">✓ ${names}</span>`;
+      }
     }
 
     return `<div class="song-row" data-row="${i}">
@@ -516,21 +575,29 @@ async function addOneSong(idx) {
   renderSongList();
 }
 
-// Unlike addOneSong (Liked Songs, always manual), this runs automatically for every currently
-// loaded song once triggered: finds playlists matching the song by artist name or by
-// Hebrew/English language bucket, and adds the song to each one, logging every addition so it's
-// reviewable afterwards. autoPlaylistsAdded is tracked per song so re-running this after loading
-// more songs doesn't redo work or duplicate an addition already made.
-// Runs the actual auto-add: for each given song, finds playlists matching by artist name or
-// language bucket (skipping any already recorded on autoPlaylistsAdded) and adds the song to
-// each one, logging every addition. Shared by the manual "הוסף אוטומטית" trigger and by the
-// incremental-load paths below, so newly loaded songs get matched too once playlistNames exists.
-async function autoAddSongsToPlaylists(songsToProcess) {
+// Unlike addOneSong (Liked Songs, always manual), this runs automatically for every given song:
+// finds playlists matching by artist name or Hebrew/English language bucket, and adds the song to
+// each one not already recorded in the persistent autoAddLog, logging every addition. Shared by
+// the manual "הוסף אוטומטית" trigger and by the incremental-load path in loadMoreSongs, so newly
+// loaded songs get matched too once playlistNames is already cached.
+// trackArray, when given, also collects each addition (with the exact insert position, needed for
+// a safe undo) - only the explicit button-triggered run does this, so "undo last run" means
+// exactly what the user clicked, not incidental scroll-triggered matches.
+async function autoAddSongsToPlaylists(songsToProcess, trackArray = null) {
   let songsAdded = 0;
   let totalAdds = 0;
+  const playlistLengthCache = {}; // fetched fresh per call, never reused across separate runs -
+  // a stale cached length from an earlier run could point "undo" at the wrong track entirely.
+  async function nextPositionFor(playlistId) {
+    if (playlistLengthCache[playlistId] == null) {
+      const data = await spotifyApi(`/playlists/${playlistId}/items?limit=1&fields=total`);
+      playlistLengthCache[playlistId] = data.total || 0;
+    }
+    return playlistLengthCache[playlistId]++;
+  }
+
   for (const s of songsToProcess) {
-    if (!s.autoPlaylistsAdded) s.autoPlaylistsAdded = [];
-    const alreadyIds = new Set(s.autoPlaylistsAdded.map((p) => p.id));
+    const alreadyIds = new Set(getAutoAddedForUri(s.uri).map((p) => p.id));
     const matches = matchPlaylistsForSong(s, playlistNames).filter((p) => !alreadyIds.has(p.id));
     if (!matches.length) continue;
 
@@ -538,15 +605,17 @@ async function autoAddSongsToPlaylists(songsToProcess) {
     renderSongList();
     for (const target of matches) {
       try {
+        const position = await nextPositionFor(target.id);
         await spotifyApi(`/playlists/${target.id}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
-        s.autoPlaylistsAdded.push(target);
+        recordAutoAdd(s.uri, target.id, target.name, position);
+        if (trackArray) trackArray.push({ uri: s.uri, playlistId: target.id, playlistName: target.name, position, songName: s.name });
         log(`נוסף "${s.name}" לפלייליסט "${target.name}".`);
         totalAdds++;
       } catch (e) {
         log(`שגיאה בהוספת "${s.name}" לפלייליסט "${target.name}": ${e.message}`);
       }
     }
-    if (s.autoPlaylistsAdded.length) songsAdded++;
+    if (getAutoAddedForUri(s.uri).length) songsAdded++;
     s.autoAddPending = false;
     renderSongList();
   }
@@ -555,11 +624,14 @@ async function autoAddSongsToPlaylists(songsToProcess) {
 
 async function findMatchingPlaylists() {
   $("btnMatchPlaylists").disabled = true;
+  lastRunAdds = [];
+  renderUndoButton();
   try {
     log("קורא את שמות הפלייליסטים שלך...");
     playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
-    const { songsAdded, totalAdds } = await autoAddSongsToPlaylists(songs);
+    const { songsAdded, totalAdds } = await autoAddSongsToPlaylists(songs, lastRunAdds);
     log(`הושלם: ${songsAdded} שירים נוספו אוטומטית ל-${totalAdds} התאמות פלייליסט (לפי אמן/שפה).`);
+    renderUndoButton();
   } catch (e) {
     log("שגיאה בהתאמת פלייליסטים: " + e.message);
   } finally {
@@ -671,7 +743,10 @@ window.addEventListener("scroll", () => {
 // ---------- wiring ----------
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
 $("btnLoad").addEventListener("click", loadSongs);
-$("btnMatchPlaylists").addEventListener("click", findMatchingPlaylists);
+$("btnMatchPlaylists").addEventListener("click", () => {
+  const ok = confirm(`הפעולה תוסיף עכשיו, אוטומטית ובלי אישור נוסף, את כל ${songs.length} השירים הטעונים לכל פלייליסט שמתאים להם לפי אמן או שפה. אפשר לבטל את הריצה הזו בשלמותה אחר כך בכפתור שיופיע. להמשיך?`);
+  if (ok) findMatchingPlaylists();
+});
 
 handleSpotifyRedirect().then(() => { updateSpotifyUi(); });
 </script>
