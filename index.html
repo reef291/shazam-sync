@@ -142,6 +142,7 @@
     color: #e0245e; border-color: #e0245e;
   }
   .chip-cat.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
+  .chip-cat.not { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); border-color: var(--err); }
   .chips-note { font-size: 0.72rem; color: var(--muted); }
   .panel {
     background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
@@ -459,6 +460,19 @@ async function enrichWithGenres(songList) {
   songList.forEach((s) => { s.genres = (s.artistId && artistGenres[s.artistId]) || []; });
 }
 
+// Every other write in this app goes to /playlists/{id}/items, matching the /me/library naming
+// this API surface uses. Removal was the one place still calling the older /tracks resource, which
+// failed and left the UI showing songs as still-present. Try items first, fall back to tracks so
+// it works on either surface, and let the caller see a real error if both fail.
+async function removeTracksFromPlaylist(playlistId, tracks) {
+  const body = JSON.stringify({ tracks });
+  try {
+    return await spotifyApi(`/playlists/${playlistId}/items`, { method: "DELETE", body });
+  } catch (e) {
+    return await spotifyApi(`/playlists/${playlistId}/tracks`, { method: "DELETE", body });
+  }
+}
+
 // Batched "is this saved to Liked Songs" check - avoids downloading the entire liked library.
 async function checkLikedBatch(uris) {
   if (!uris.length) return [];
@@ -608,14 +622,15 @@ const PLAYLIST_CATEGORIES = [
   { id: "rock", label: "רוק", nameTerms: ["רוק", "rock", "מטאל", "metal", "פאנק", "punk", "גראנג'", "grunge"], genres: ["rock", "metal", "punk", "grunge", "alternative", "indie"] },
   { id: "electronic", label: "אלקטרוני", nameTerms: ["אלקטרוני", "אלקטרונית", "electronic", "טכנו", "techno", "האוס", "house", "edm", "טראנס", "trance", "dubstep"], genres: ["electro", "techno", "house", "edm", "trance", "dubstep", "dance"] },
   { id: "pop", label: "פופ", nameTerms: ["פופ", "pop"], genres: ["pop"] },
-  { id: "mizrahi", label: "מזרחית", nameTerms: ["מזרחית", "מזרחי", "ים תיכוני", "mizrahi"], genres: ["mizrahi", "mediterranean"] },
+  // חפלה/חפלות is Mizrahi party music specifically, so the name implies both this and "party".
+  { id: "mizrahi", label: "מזרחית", nameTerms: ["מזרחית", "מזרחי", "ים תיכוני", "mizrahi", "חפלה", "חפלות", "חאפלה", "טורקית", "יוונית"], genres: ["mizrahi", "mediterranean", "greek", "turkish"] },
   { id: "jazz", label: "ג'אז/בלוז", nameTerms: ["ג'אז", "גאז", "jazz", "בלוז", "blues"], genres: ["jazz", "blues", "bossa", "swing"] },
   { id: "classical", label: "קלאסי", nameTerms: ["קלאסי", "קלאסית", "classical"], genres: ["classical", "opera", "baroque", "orchestra"] },
   { id: "country", label: "קאנטרי/פולק", nameTerms: ["קאנטרי", "country", "folk", "פולק"], genres: ["country", "folk", "americana", "bluegrass"] },
   { id: "reggae", label: "רגאיי", nameTerms: ["רגאיי", "רגאי", "reggae", "ska"], genres: ["reggae", "ska", "dancehall"] },
   { id: "workout", label: "אימון/כושר", nameTerms: ["אימון", "כושר", "ריצה", "ספורט", "workout", "gym", "running", "fitness", "cardio", "pump"], genres: ["workout", "edm", "dance", "power"] },
   { id: "chill", label: "רגוע/שקט", nameTerms: ["שקט", "שקטים", "רגוע", "chill", "calm", "relax", "sleep", "שינה", "אקוסטי", "acoustic"], genres: ["chill", "ambient", "acoustic", "lo-fi", "lofi", "singer-songwriter"] },
-  { id: "party", label: "מסיבה/ריקודים", nameTerms: ["מסיבה", "מסיבות", "party", "dance", "ריקוד", "ריקודים", "חתונה", "dj"], genres: ["dance", "party", "edm", "house", "disco"] },
+  { id: "party", label: "מסיבה/ריקודים", nameTerms: ["מסיבה", "מסיבות", "party", "dance", "dancing", "ריקוד", "ריקודים", "רחבה", "חתונה", "חפלה", "חפלות", "dj", "להיטים", "hits", "bangers"], genres: ["dance", "party", "edm", "house", "disco"] },
   { id: "oldies", label: "ישן/נוסטלגיה", nameTerms: ["ישן", "ישנים", "נוסטלג", "רטרו", "retro", "oldies", "classics", "קלאסיקות"], genres: ["classic", "oldies", "60s", "70s", "80s", "90s"] },
   { id: "kids", label: "ילדים", nameTerms: ["ילדים", "kids", "children", "פעוטות"], genres: ["children", "kids"] },
 ];
@@ -630,11 +645,27 @@ function detectScript(text) {
   return null;
 }
 
-// Reads a playlist's name and returns the category ids it implies. This is the "understand from
-// the name what you safely can" part - it only fires on explicit words, never guesses.
+// Words that flip a category from "this playlist is about X" to "keep X out of this playlist".
+// Without these, a playlist named "בלי מזרחית" would be read as a Mizrahi playlist - the exact
+// opposite of what it says.
+const NEGATION_WORDS = ["בלי", "ללא", "לא ", "no ", "not ", "without", "anti", "non-", "-"];
+
+// Reads a playlist's name and returns the categories it implies, split into ones it's about and
+// ones it explicitly excludes. A name can imply several at once ("chill english" = both).
 function detectCategoriesFromName(name) {
   const n = (name || "").toLowerCase();
-  return PLAYLIST_CATEGORIES.filter((c) => c.nameTerms.some((t) => n.includes(t))).map((c) => c.id);
+  const cats = [];
+  const notCats = [];
+  PLAYLIST_CATEGORIES.forEach((c) => {
+    const hit = c.nameTerms.find((t) => n.includes(t));
+    if (!hit) return;
+    // Look just behind the matched word - that's where a negation would sit in both Hebrew
+    // ("בלי מזרחית") and English ("no rap").
+    const before = n.slice(Math.max(0, n.indexOf(hit) - 10), n.indexOf(hit));
+    if (NEGATION_WORDS.some((neg) => before.includes(neg))) notCats.push(c.id);
+    else cats.push(c.id);
+  });
+  return { cats, notCats };
 }
 
 // Works out what a playlist is actually full of, by looking at the songs already in it: the
@@ -683,12 +714,12 @@ function detectCategoriesFromContent(entry) {
 // string, so normalize on read rather than migrating destructively.
 function getMeta(playlistId) {
   const raw = playlistMeta[playlistId];
-  if (!raw) return { cats: [], terms: "" };
-  if (typeof raw === "string") return { cats: [], terms: raw };
-  return { cats: raw.cats || [], terms: raw.terms || "" };
+  if (!raw) return { cats: [], notCats: [], terms: "" };
+  if (typeof raw === "string") return { cats: [], notCats: [], terms: raw };
+  return { cats: raw.cats || [], notCats: raw.notCats || [], terms: raw.terms || "" };
 }
 function setMeta(playlistId, meta) {
-  playlistMeta[playlistId] = { cats: meta.cats, terms: meta.terms };
+  playlistMeta[playlistId] = { cats: meta.cats, notCats: meta.notCats || [], terms: meta.terms };
   LS.set("playlist_meta", playlistMeta);
 }
 
@@ -703,7 +734,17 @@ function songMatchesCategory(song, catId) {
 }
 
 function matchPlaylistsByCategory(song, playlistNames) {
-  return playlistNames.filter((p) => getMeta(p.id).cats.some((catId) => songMatchesCategory(song, catId)));
+  return playlistNames.filter((p) => {
+    const meta = getMeta(p.id);
+    if (meta.notCats.some((catId) => songMatchesCategory(song, catId))) return false;
+    return meta.cats.some((catId) => songMatchesCategory(song, catId));
+  });
+}
+
+// An excluded category vetoes the playlist entirely, not just the category route - otherwise a
+// song could still land in "בלי מזרחית" via an artist-name or free-term match.
+function isVetoed(song, playlist) {
+  return getMeta(playlist.id).notCats.some((catId) => songMatchesCategory(song, catId));
 }
 
 // Free-text terms the user typed for a playlist, matched against the song title/artist.
@@ -728,7 +769,7 @@ function matchPlaylistsForSong(song, playlistNames) {
     ...matchPlaylistsByCategory(song, playlistNames),
     ...matchPlaylistsByTerms(song, playlistNames),
   ].forEach((p) => byId.set(p.id, p));
-  return [...byId.values()];
+  return [...byId.values()].filter((p) => !isVetoed(song, p));
 }
 
 // Explains why a playlist matched, so the preview can justify each suggested addition instead of
@@ -891,7 +932,8 @@ function renderAutoAddPanel() {
             const inCount = songs.filter((s) => isInPlaylist(s.uri, p.id)).length;
             const pending = pendingByPlaylist[p.id] || 0;
             const catLabels = meta.cats.map((c) => CATEGORY_BY_ID[c] && CATEGORY_BY_ID[c].label).filter(Boolean);
-            const patternText = catLabels.concat(meta.terms ? [meta.terms] : []).join(" · ") || "לא זוהה דפוס - לחצו להגדרה";
+            const notLabels = meta.notCats.map((c) => CATEGORY_BY_ID[c] && `בלי ${CATEGORY_BY_ID[c].label}`).filter(Boolean);
+            const patternText = catLabels.concat(notLabels, meta.terms ? [meta.terms] : []).join(" · ") || "לא זוהה דפוס - לחצו להגדרה";
             return `
             <div class="pl-row">
               <div class="pl-row-top">
@@ -905,10 +947,13 @@ function renderAutoAddPanel() {
               <div class="pl-pattern" data-expand="${esc(p.id)}">${esc(patternText)}</div>
               ${expandedPlaylistIds.has(p.id) ? `
                 <div class="pl-detail">
+                  <div class="chips-note" style="margin-bottom:5px;">לחיצה על קטגוריה מחליפה בין: מתעלם ← כן ← בלי</div>
                   <div class="chips" style="margin-bottom:6px;">
-                    ${PLAYLIST_CATEGORIES.map((c) => `
-                      <button class="chip chip-cat${meta.cats.includes(c.id) ? " on" : ""}" data-cat="${esc(c.id)}" data-catpl="${esc(p.id)}">${esc(c.label)}</button>
-                    `).join("")}
+                    ${PLAYLIST_CATEGORIES.map((c) => {
+                      const on = meta.cats.includes(c.id);
+                      const not = meta.notCats.includes(c.id);
+                      return `<button class="chip chip-cat${on ? " on" : ""}${not ? " not" : ""}" data-cat="${esc(c.id)}" data-catpl="${esc(p.id)}">${not ? "≠ " : ""}${esc(c.label)}</button>`;
+                    }).join("")}
                   </div>
                   <input type="text" class="pl-desc" data-desc="${esc(p.id)}" value="${esc(meta.terms)}"
                     placeholder="מילים משלך, מופרדות בפסיק - למשל: כוורת, שלמה ארצי" />
@@ -952,13 +997,18 @@ function renderAutoAddPanel() {
       updateAutoAddPreview();
     });
   });
+  // Three-state cycle: ignored -> include -> exclude -> ignored.
   el.querySelectorAll("button[data-cat]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const pid = btn.dataset.catpl;
+      const cat = btn.dataset.cat;
       const meta = getMeta(pid);
-      const idx = meta.cats.indexOf(btn.dataset.cat);
-      if (idx >= 0) meta.cats.splice(idx, 1);
-      else meta.cats.push(btn.dataset.cat);
+      const isOn = meta.cats.includes(cat);
+      const isNot = meta.notCats.includes(cat);
+      meta.cats = meta.cats.filter((c) => c !== cat);
+      meta.notCats = meta.notCats.filter((c) => c !== cat);
+      if (!isOn && !isNot) meta.cats.push(cat);
+      else if (isOn) meta.notCats.push(cat);
       setMeta(pid, meta);
       renderAutoAddPanel();
     });
@@ -1009,10 +1059,7 @@ async function bulkRemoveFromPlaylist(playlistId) {
   try {
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
-      await spotifyApi(`/playlists/${playlistId}/tracks`, {
-        method: "DELETE",
-        body: JSON.stringify({ tracks: batch.map((uri) => ({ uri })) }),
-      });
+      await removeTracksFromPlaylist(playlistId, batch.map((uri) => ({ uri })));
       batch.forEach((uri) => { set.delete(uri); forgetAutoAdd(uri, playlistId); });
     }
     log(`הוסרו ${uris.length} שירים מ"${p.name}".`);
@@ -1047,10 +1094,7 @@ async function clearDisplayedFromAllPlaylists() {
     try {
       for (let i = 0; i < job.uris.length; i += 100) {
         const batch = job.uris.slice(i, i + 100);
-        await spotifyApi(`/playlists/${job.playlist.id}/tracks`, {
-          method: "DELETE",
-          body: JSON.stringify({ tracks: batch.map((uri) => ({ uri })) }),
-        });
+        await removeTracksFromPlaylist(job.playlist.id, batch.map((uri) => ({ uri })));
         batch.forEach((uri) => {
           set.delete(uri);
           forgetAutoAdd(uri, job.playlist.id);
@@ -1119,10 +1163,7 @@ async function undoLastAutoAddRun() {
   const sorted = [...toUndo].sort((a, b) => b.position - a.position);
   for (const entry of sorted) {
     try {
-      await spotifyApi(`/playlists/${entry.playlistId}/tracks`, {
-        method: "DELETE",
-        body: JSON.stringify({ tracks: [{ uri: entry.uri, positions: [entry.position] }] }),
-      });
+      await removeTracksFromPlaylist(entry.playlistId, [{ uri: entry.uri, positions: [entry.position] }]);
       forgetAutoAdd(entry.uri, entry.playlistId);
       const undoSet = playlistUriSet(entry.playlistId);
       if (undoSet) undoSet.delete(entry.uri);
@@ -1252,10 +1293,7 @@ async function togglePlaylistMembership(idx, playlistId, btn) {
   btn.style.opacity = "0.55";
   try {
     if (removing) {
-      await spotifyApi(`/playlists/${playlistId}/tracks`, {
-        method: "DELETE",
-        body: JSON.stringify({ tracks: [{ uri: s.uri }] }),
-      });
+      await removeTracksFromPlaylist(playlistId, [{ uri: s.uri }]);
       set.delete(s.uri);
       forgetAutoAdd(s.uri, playlistId); // keep the auto-add bookkeeping honest about what's there
       log(`הוסר "${s.name}" מהפלייליסט "${p.name}".`);
@@ -1364,8 +1402,12 @@ async function scanForMatches() {
       let detected = 0;
       unconfigured.forEach((p) => {
         const fromName = detectCategoriesFromName(p.name);
-        const cats = fromName.length ? fromName : detectCategoriesFromContent(playlistTracks.get(p.id));
-        if (cats.length) { setMeta(p.id, { cats, terms: "" }); detected++; }
+        // Fall back to what's actually inside only when the name itself said nothing.
+        const cats = fromName.cats.length ? fromName.cats : detectCategoriesFromContent(playlistTracks.get(p.id));
+        if (cats.length || fromName.notCats.length) {
+          setMeta(p.id, { cats, notCats: fromName.notCats, terms: "" });
+          detected++;
+        }
       });
       log(`זוהה דפוס ל-${detected} מתוך ${unconfigured.length} פלייליסטים חדשים - אפשר לערוך בלחיצה על שם הפלייליסט.`);
     }
