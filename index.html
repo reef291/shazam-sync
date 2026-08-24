@@ -435,8 +435,8 @@ async function getPlaylistTracksPage(playlistId, offset, limit) {
 // instead of guesses from the song title.
 let artistGenres = LS.get("artist_genres", {});
 
-async function enrichWithGenres(songList) {
-  const missing = [...new Set(songList.map((s) => s.artistId).filter((id) => id && !artistGenres[id]))];
+async function enrichGenresForArtistIds(ids) {
+  const missing = ids.filter((id) => id && !artistGenres[id]);
   for (let i = 0; i < missing.length; i += 50) {
     const batch = missing.slice(i, i + 50);
     try {
@@ -444,6 +444,7 @@ async function enrichWithGenres(songList) {
       (data.artists || []).forEach((a) => {
         if (a && a.id) artistGenres[a.id] = (a.genres || []).map((g) => g.toLowerCase());
       });
+      // Remember the misses too, so a genre-less artist isn't re-requested on every load.
       batch.forEach((id) => { if (!artistGenres[id]) artistGenres[id] = []; });
     } catch (e) {
       log(`לא ניתן לקרוא סגנונות מוזיקליים (${e.message}) - ההתאמה תתבסס על שמות בלבד.`);
@@ -451,6 +452,10 @@ async function enrichWithGenres(songList) {
     }
   }
   try { LS.set("artist_genres", artistGenres); } catch (e) { /* quota - harmless, refetched later */ }
+}
+
+async function enrichWithGenres(songList) {
+  await enrichGenresForArtistIds([...new Set(songList.map((s) => s.artistId).filter(Boolean))]);
   songList.forEach((s) => { s.genres = (s.artistId && artistGenres[s.artistId]) || []; });
 }
 
@@ -470,14 +475,28 @@ function loadMembershipCache() {
   const raw = LS.get("playlist_membership", {});
   const map = new Map();
   for (const [id, entry] of Object.entries(raw)) {
-    if (entry && Array.isArray(entry.uris)) map.set(id, { snapshot: entry.snapshot, uris: new Set(entry.uris) });
+    if (entry && Array.isArray(entry.uris)) {
+      map.set(id, {
+        snapshot: entry.snapshot,
+        uris: new Set(entry.uris),
+        sampleArtists: entry.sampleArtists || [],
+        sampleNames: entry.sampleNames || [],
+      });
+    }
   }
   return map;
 }
 
 function saveMembershipCache(map) {
   const out = {};
-  for (const [id, entry] of map) out[id] = { snapshot: entry.snapshot, uris: [...entry.uris] };
+  for (const [id, entry] of map) {
+    out[id] = {
+      snapshot: entry.snapshot,
+      uris: [...entry.uris],
+      sampleArtists: entry.sampleArtists || [],
+      sampleNames: entry.sampleNames || [],
+    };
+  }
   try {
     LS.set("playlist_membership", out);
   } catch (e) {
@@ -486,19 +505,32 @@ function saveMembershipCache(map) {
   }
 }
 
-async function readPlaylistUris(playlistId) {
-  const fields = encodeURIComponent("items(item(uri),track(uri)),next");
+// Also collects a bounded sample of artist ids and track names, which is what lets the tool work
+// out what a playlist is actually FULL of - not just what its title says. The sample is capped so
+// a 2000-track playlist doesn't blow up the cache or the genre lookups.
+const PATTERN_SAMPLE_SIZE = 40;
+
+async function readPlaylistContent(playlistId) {
+  const fields = encodeURIComponent("items(item(uri,name,artists(id)),track(uri,name,artists(id))),next");
   const uris = new Set();
+  const sampleArtists = [];
+  const sampleNames = [];
   let url = `/playlists/${playlistId}/items?limit=100&fields=${fields}`;
   while (url) {
     const page = await spotifyApi(url);
     (page.items || []).forEach((entry) => {
       const it = entry.item || entry.track;
-      if (it && it.uri) uris.add(it.uri);
+      if (!it || !it.uri) return;
+      uris.add(it.uri);
+      if (sampleNames.length < PATTERN_SAMPLE_SIZE) {
+        sampleNames.push(it.name || "");
+        const aid = it.artists && it.artists[0] && it.artists[0].id;
+        if (aid) sampleArtists.push(aid);
+      }
     });
     url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
-  return uris;
+  return { uris, sampleArtists, sampleNames };
 }
 
 async function refreshPlaylistMembership(playlists, cache) {
@@ -514,7 +546,8 @@ async function refreshPlaylistMembership(playlists, cache) {
     for (let i = 0; i < stale.length; i++) {
       const p = stale[i];
       busy(`קורא פלייליסט שהשתנה (${i + 1}/${stale.length}): ${p.name}`);
-      cache.set(p.id, { snapshot: p.snapshot, uris: await readPlaylistUris(p.id) });
+      const content = await readPlaylistContent(p.id);
+      cache.set(p.id, { snapshot: p.snapshot, ...content });
     }
   }
 
@@ -602,6 +635,48 @@ function detectScript(text) {
 function detectCategoriesFromName(name) {
   const n = (name || "").toLowerCase();
   return PLAYLIST_CATEGORIES.filter((c) => c.nameTerms.some((t) => n.includes(t))).map((c) => c.id);
+}
+
+// Works out what a playlist is actually full of, by looking at the songs already in it: the
+// dominant artist genres and the dominant script of the track titles. A name like "רשימה 3" says
+// nothing, but its contents usually do - this is what replaces "לא זוהה דפוס" for most playlists.
+// Requires the sampled artists' genres to already be in artistGenres.
+function detectCategoriesFromContent(entry) {
+  if (!entry) return [];
+  const found = [];
+
+  const artists = entry.sampleArtists || [];
+  if (artists.length >= 4) {
+    // Score each category by how many sampled artists carry one of its genres, then keep the ones
+    // covering a real share of the playlist rather than a single stray track.
+    const scores = {};
+    artists.forEach((id) => {
+      const genres = artistGenres[id] || [];
+      PLAYLIST_CATEGORIES.forEach((c) => {
+        if (!c.genres) return;
+        if (genres.some((g) => c.genres.some((cg) => g.includes(cg)))) scores[c.id] = (scores[c.id] || 0) + 1;
+      });
+    });
+    Object.entries(scores)
+      .filter(([, n]) => n / artists.length >= 0.4)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .forEach(([id]) => found.push(id));
+  }
+
+  const names = entry.sampleNames || [];
+  if (names.length >= 4) {
+    const scripts = {};
+    names.forEach((n) => { const s = detectScript(n); if (s) scripts[s] = (scripts[s] || 0) + 1; });
+    const total = Object.values(scripts).reduce((a, b) => a + b, 0);
+    const [topScript, count] = Object.entries(scripts).sort((a, b) => b[1] - a[1])[0] || [];
+    if (topScript && total && count / total >= 0.75) {
+      const scriptCat = PLAYLIST_CATEGORIES.find((c) => c.script === topScript);
+      if (scriptCat && !found.includes(scriptCat.id)) found.push(scriptCat.id);
+    }
+  }
+
+  return found;
 }
 
 // playlistMeta entries are { cats: [ids], terms: "free text" }. Older versions stored a bare
@@ -734,6 +809,9 @@ function forgetAutoAdd(uri, playlistId) {
 let lastRunAdds = LS.get("last_auto_add_run", []);
 function saveLastRun() { LS.set("last_auto_add_run", lastRunAdds); }
 
+// Same idea for the sweeping "clear from all playlists" action, so it stays reversible.
+let lastClearRemovals = LS.get("last_clear_removals", []);
+
 let alsoLikeChecked = false;
 let playlistListOpen = false;
 let expandedPlaylistIds = new Set();
@@ -849,8 +927,10 @@ function renderAutoAddPanel() {
       <div class="preview-box" id="previewBox"></div>
       <div>
         <button id="btnRunAutoAdd" class="primary-big">בצע הוספה</button>
-        <button id="btnSaveSettings" class="secondary">שמור ועדכן רשימה</button>
         ${lastRunAdds.length ? `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>` : ""}
+        <button id="btnClearAll" class="secondary">נקה את השירים המוצגים מכל הפלייליסטים</button>
+        ${lastClearRemovals.length ? `<button id="btnUndoClear" class="secondary">בטל ניקוי (${lastClearRemovals.length})</button>` : ""}
+        <button id="btnSaveSettings" class="secondary">שמור ועדכן רשימה</button>
       </div>
     </div>`;
 
@@ -868,6 +948,7 @@ function renderAutoAddPanel() {
       if (cb.checked) excludedPlaylistIds.delete(cb.dataset.scope);
       else excludedPlaylistIds.add(cb.dataset.scope);
       LS.set("excluded_playlist_ids", [...excludedPlaylistIds]);
+      renderSongList(); // an unticked playlist disappears from every song row
       updateAutoAddPreview();
     });
   });
@@ -896,9 +977,13 @@ function renderAutoAddPanel() {
   });
   $("alsoLikeCheckbox").addEventListener("change", (e) => { alsoLikeChecked = e.target.checked; });
   $("btnRunAutoAdd").addEventListener("click", confirmAndRunAutoAdd);
+  $("btnClearAll").addEventListener("click", clearDisplayedFromAllPlaylists);
+  const undoClearBtn = $("btnUndoClear");
+  if (undoClearBtn) undoClearBtn.addEventListener("click", undoLastClear);
   $("btnSaveSettings").addEventListener("click", () => {
     LS.set("playlist_meta", playlistMeta);
     LS.set("excluded_playlist_ids", [...excludedPlaylistIds]);
+    renderSongList(); // scope changes decide which chips are visible on each song
     renderAutoAddPanel();
     log("ההגדרות נשמרו והרשימה עודכנה.");
   });
@@ -937,6 +1022,87 @@ async function bulkRemoveFromPlaylist(playlistId) {
   saveMembershipCache(playlistTracks);
   renderSongList();
   renderAutoAddPanel();
+}
+
+// Strips every displayed song out of every playlist it appears in. Sweeping enough that it gets an
+// undo rather than a confirmation prompt: each removal is recorded, and "בטל ניקוי" puts them all
+// back. Only the loaded songs are touched - the rest of each playlist is left alone.
+async function clearDisplayedFromAllPlaylists() {
+  if (!hasMembershipData()) return;
+  const jobs = [];
+  playlistNames.forEach((p) => {
+    const set = playlistUriSet(p.id);
+    if (!set) return;
+    const uris = songs.filter((s) => set.has(s.uri)).map((s) => s.uri);
+    if (uris.length) jobs.push({ playlist: p, uris: [...new Set(uris)] });
+  });
+  if (!jobs.length) { log("אף אחד מהשירים המוצגים לא נמצא באף פלייליסט."); return; }
+
+  const total = jobs.reduce((n, j) => n + j.uris.length, 0);
+  log(`מנקה ${total} שיוכים מ-${jobs.length} פלייליסטים...`);
+  lastClearRemovals = [];
+
+  for (const job of jobs) {
+    const set = playlistUriSet(job.playlist.id);
+    try {
+      for (let i = 0; i < job.uris.length; i += 100) {
+        const batch = job.uris.slice(i, i + 100);
+        await spotifyApi(`/playlists/${job.playlist.id}/tracks`, {
+          method: "DELETE",
+          body: JSON.stringify({ tracks: batch.map((uri) => ({ uri })) }),
+        });
+        batch.forEach((uri) => {
+          set.delete(uri);
+          forgetAutoAdd(uri, job.playlist.id);
+          lastClearRemovals.push({ uri, playlistId: job.playlist.id, playlistName: job.playlist.name });
+        });
+      }
+      log(`הוסרו ${job.uris.length} שירים מ"${job.playlist.name}".`);
+    } catch (e) {
+      log(`שגיאה בניקוי "${job.playlist.name}": ${e.message}`);
+    }
+  }
+
+  LS.set("last_clear_removals", lastClearRemovals);
+  saveMembershipCache(playlistTracks);
+  renderSongList();
+  renderAutoAddPanel();
+  log(`הניקוי הושלם (${lastClearRemovals.length} הסרות). אפשר לבטל בכפתור "בטל ניקוי".`);
+}
+
+// Puts back exactly what the last clear removed. Appends to the end of each playlist, since the
+// original ordering isn't recoverable once the tracks are gone.
+async function undoLastClear() {
+  const toRestore = lastClearRemovals;
+  lastClearRemovals = [];
+  LS.set("last_clear_removals", []);
+  renderAutoAddPanel();
+  log(`משחזר ${toRestore.length} שיוכים שנוקו...`);
+
+  const byPlaylist = {};
+  toRestore.forEach((r) => {
+    if (!byPlaylist[r.playlistId]) byPlaylist[r.playlistId] = { name: r.playlistName, uris: [] };
+    byPlaylist[r.playlistId].uris.push(r.uri);
+  });
+
+  for (const [pid, job] of Object.entries(byPlaylist)) {
+    const set = playlistUriSet(pid);
+    try {
+      for (let i = 0; i < job.uris.length; i += 100) {
+        const batch = job.uris.slice(i, i + 100);
+        await spotifyApi(`/playlists/${pid}/items`, { method: "POST", body: JSON.stringify({ uris: batch }) });
+        if (set) batch.forEach((uri) => set.add(uri));
+      }
+      log(`שוחזרו ${job.uris.length} שירים ל"${job.name}".`);
+    } catch (e) {
+      log(`שגיאה בשחזור "${job.name}": ${e.message}`);
+    }
+  }
+
+  saveMembershipCache(playlistTracks);
+  renderSongList();
+  renderAutoAddPanel();
+  log("השחזור הושלם.");
 }
 
 // Removes exactly the tracks the last run added, and only those - by the exact position each one
@@ -980,22 +1146,26 @@ function renderSongList() {
   el.innerHTML = songs.map((s, i) => {
     // The heart chip is the single source of truth for Liked Songs - filled means the song is
     // currently saved, clicking toggles it in whichever direction applies.
-    const likeChip = `<button class="chip chip-like${s.inLiked ? " on" : ""}" data-like="${i}" ${s.likedPending ? "disabled" : ""}>${
-      s.likedPending ? "..." : (s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים")
+    const likeChip = `<button class="chip chip-like${s.inLiked ? " on" : ""}" data-like="${i}">${
+      s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים"
     }</button>`;
 
     let playlistChips;
     if (!hasMembershipData()) {
       playlistChips = `<span class="chips-note">לחצו "טען פלייליסטים" כדי לנהל שיוך לפלייליסטים.</span>`;
     } else {
-      playlistChips = playlistNames.map((p) => {
-        const set = playlistUriSet(p.id);
-        const inIt = !!set && set.has(s.uri);
-        const pending = s.pendingPlaylists && s.pendingPlaylists.has(p.id);
-        return `<button class="chip${inIt ? " on" : ""}" data-idx="${i}" data-pid="${esc(p.id)}" ${pending ? "disabled" : ""} title="${
-          inIt ? `לחצו כדי להסיר מ-${esc(p.name)}` : `לחצו כדי להוסיף ל-${esc(p.name)}`
-        }">${pending ? "..." : (inIt ? "✓ " : "+ ") + esc(p.name)}</button>`;
-      }).join("");
+      // Only playlists that are ticked in the panel appear here - unticking one is how you get it
+      // out of the way on every song at once.
+      const visible = includedPlaylistNames();
+      playlistChips = visible.length
+        ? visible.map((p) => {
+            const set = playlistUriSet(p.id);
+            const inIt = !!set && set.has(s.uri);
+            return `<button class="chip${inIt ? " on" : ""}" data-idx="${i}" data-pid="${esc(p.id)}" title="${
+              inIt ? `לחצו כדי להסיר מ-${esc(p.name)}` : `לחצו כדי להוסיף ל-${esc(p.name)}`
+            }">${(inIt ? "✓ " : "+ ") + esc(p.name)}</button>`;
+          }).join("")
+        : `<span class="chips-note">לא סומן אף פלייליסט בפאנל למעלה.</span>`;
     }
 
     return `<div class="song-row" data-row="${i}">
@@ -1015,10 +1185,10 @@ function renderSongList() {
   renderLoadMoreButton();
 
   el.querySelectorAll("[data-like]").forEach((btn) => {
-    btn.addEventListener("click", () => toggleLiked(Number(btn.dataset.like)));
+    btn.addEventListener("click", () => toggleLiked(Number(btn.dataset.like), btn));
   });
   el.querySelectorAll(".chip[data-pid]").forEach((btn) => {
-    btn.addEventListener("click", () => togglePlaylistMembership(Number(btn.dataset.idx), btn.dataset.pid));
+    btn.addEventListener("click", () => togglePlaylistMembership(Number(btn.dataset.idx), btn.dataset.pid, btn));
   });
 
 }
@@ -1038,17 +1208,17 @@ function renderLoadMoreButton() {
   $("btnLoadMore").addEventListener("click", loadMoreSongs);
 }
 
-// In-flight/added state lives on the song object itself (not on the clicked DOM node), so it
-// survives a full renderSongList() rebuild while the request is still going - otherwise the
-// completion handler updates a button already detached from the page, and the freshly rendered
-// one never picks up the new state.
-async function toggleLiked(idx) {
+// The clicked button is updated in place rather than re-rendering the list. A full re-render made
+// every chip blink out and back on each click, which read as the row breaking. The pending flag
+// still lives on the song object so a second click can't double-fire the same request.
+async function toggleLiked(idx, btn) {
   const s = songs[idx];
   if (s.likedPending) return;
   const removing = s.inLiked;
 
   s.likedPending = true;
-  renderSongList();
+  btn.disabled = true;
+  btn.style.opacity = "0.55";
   try {
     await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: removing ? "DELETE" : "PUT" });
     s.inLiked = !removing;
@@ -1057,14 +1227,17 @@ async function toggleLiked(idx) {
     log(`שגיאה ב${removing ? "הסרת" : "הוספת"} "${s.name}": ${e.message}`);
   }
   s.likedPending = false;
-  renderSongList();
+  btn.disabled = false;
+  btn.style.opacity = "";
+  btn.classList.toggle("on", s.inLiked);
+  btn.textContent = s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים";
 }
 
 // Adds or removes the song from one playlist, whichever the current membership implies.
 // Removal deletes every occurrence of the URI in that playlist (no positions given), because here
 // the user's intent is "this song should not be in this playlist" - unlike the run-undo, which is
 // position-scoped precisely so it won't disturb copies it didn't add.
-async function togglePlaylistMembership(idx, playlistId) {
+async function togglePlaylistMembership(idx, playlistId, btn) {
   const s = songs[idx];
   const p = playlistNames.find((x) => x.id === playlistId);
   const set = playlistUriSet(playlistId);
@@ -1075,7 +1248,8 @@ async function togglePlaylistMembership(idx, playlistId) {
   const removing = set.has(s.uri);
 
   s.pendingPlaylists.add(playlistId);
-  renderSongList();
+  btn.disabled = true;
+  btn.style.opacity = "0.55";
   try {
     if (removing) {
       await spotifyApi(`/playlists/${playlistId}/tracks`, {
@@ -1095,7 +1269,13 @@ async function togglePlaylistMembership(idx, playlistId) {
   }
   saveMembershipCache(playlistTracks);
   s.pendingPlaylists.delete(playlistId);
-  renderSongList();
+
+  const nowIn = set.has(s.uri);
+  btn.disabled = false;
+  btn.style.opacity = "";
+  btn.classList.toggle("on", nowIn);
+  btn.textContent = (nowIn ? "✓ " : "+ ") + p.name;
+  btn.title = nowIn ? `לחצו כדי להסיר מ-${p.name}` : `לחצו כדי להוסיף ל-${p.name}`;
   renderAutoAddPanel(); // membership changed, so the auto-add preview may too
 }
 
@@ -1168,15 +1348,27 @@ async function scanForMatches() {
     LS.set("playlist_names", playlistNames);
     playlistTracks = await refreshPlaylistMembership(playlistNames, playlistTracks || new Map());
 
-    // Fill in a pattern for any playlist the user hasn't configured yet, read straight off its
-    // name. Never overwrites something already set - the user's own edits always win.
-    let detected = 0;
-    playlistNames.forEach((p) => {
-      if (playlistMeta[p.id]) return;
-      const cats = detectCategoriesFromName(p.name);
-      if (cats.length) { setMeta(p.id, { cats, terms: "" }); detected++; }
-    });
-    if (detected) log(`זוהה דפוס אוטומטי ל-${detected} פלייליסטים לפי השם שלהם - אפשר לערוך בלחיצה על שם הפלייליסט.`);
+    // Work out a pattern for any playlist the user hasn't configured yet: first from its name,
+    // and if that says nothing, from what's actually inside it. Never overwrites something already
+    // set - the user's own edits always win.
+    const unconfigured = playlistNames.filter((p) => !playlistMeta[p.id]);
+    if (unconfigured.length) {
+      busy("מזהה את הדפוס של הפלייליסטים...");
+      const sampleIds = [];
+      unconfigured.forEach((p) => {
+        const entry = playlistTracks.get(p.id);
+        if (entry) sampleIds.push(...(entry.sampleArtists || []));
+      });
+      await enrichGenresForArtistIds([...new Set(sampleIds)]);
+
+      let detected = 0;
+      unconfigured.forEach((p) => {
+        const fromName = detectCategoriesFromName(p.name);
+        const cats = fromName.length ? fromName : detectCategoriesFromContent(playlistTracks.get(p.id));
+        if (cats.length) { setMeta(p.id, { cats, terms: "" }); detected++; }
+      });
+      log(`זוהה דפוס ל-${detected} מתוך ${unconfigured.length} פלייליסטים חדשים - אפשר לערוך בלחיצה על שם הפלייליסט.`);
+    }
 
     playlistListOpen = true;
     renderSongList();
