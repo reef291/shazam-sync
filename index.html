@@ -181,12 +181,12 @@
     <h2>🎵 השירים שלך</h2>
     <div class="songs-actions">
       <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-      <button id="btnMatchPlaylists" class="secondary" disabled title="קורא רק את שמות הפלייליסטים שלך ומציע התאמה לפי שם אמן">התאמת פלייליסטים</button>
+      <button id="btnMatchPlaylists" class="secondary" disabled title="קורא את שמות הפלייליסטים שלך, ומוסיף כל שיר לפלייליסטים מתאימים לפי אמן ושפה - אוטומטית">הוסף אוטומטית לפלייליסטים מתאימים</button>
     </div>
   </div>
   <small class="hint" id="loadHint"></small>
   <small class="hint" id="lastLoadHint"></small>
-  <small class="hint">שום דבר לא מתווסף אוטומטית - רק בלחיצה שלך על כפתור ליד השיר.</small>
+  <small class="hint">הוספה ל-Liked Songs תמיד ידנית, רק בלחיצה שלך. "הוסף אוטומטית לפלייליסטים" כן מוסיף לבד לפי אמן ושפה - כל הוספה מתועדת ביומן הפעילות למטה.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
@@ -398,7 +398,7 @@ async function fetchOwnedPlaylistNames(excludePlaylistId) {
 
 // Finds playlists whose name matches the song's artist - a substring match either direction,
 // guarded by a minimum length so short names (e.g. "רוק") don't match everything.
-function matchPlaylistsForArtist(artist, playlistNames) {
+function matchPlaylistsByArtist(artist, playlistNames) {
   if (!artist || artist.length < 3) return [];
   const artistLower = artist.toLowerCase();
   return playlistNames.filter((p) => {
@@ -406,6 +406,36 @@ function matchPlaylistsForArtist(artist, playlistNames) {
     if (nameLower.length < 3) return false;
     return nameLower.includes(artistLower) || artistLower.includes(nameLower);
   });
+}
+
+// Hebrew vs. Latin script is the one language signal we can read directly off the song/artist
+// text with zero extra API calls - good enough for the "עברית"/"hebrew" style buckets people
+// actually name playlists with.
+const HEBREW_KEYWORDS = ["עברית", "עברי", "hebrew", "ישראלי", "ישראלית"];
+const ENGLISH_KEYWORDS = ["english", "אנגלית", "לועזי", "foreign"];
+
+function detectLanguageBucket(text) {
+  if (/[֐-׿]/.test(text)) return "hebrew";
+  if (/[A-Za-z]/.test(text)) return "english";
+  return null;
+}
+
+function matchPlaylistsByLanguage(song, playlistNames) {
+  const bucket = detectLanguageBucket(`${song.name} ${song.artist}`);
+  const keywords = bucket === "hebrew" ? HEBREW_KEYWORDS : bucket === "english" ? ENGLISH_KEYWORDS : [];
+  if (!keywords.length) return [];
+  return playlistNames.filter((p) => {
+    const nameLower = p.name.toLowerCase();
+    return keywords.some((k) => nameLower.includes(k));
+  });
+}
+
+// Combines the artist-name and language-bucket matches, de-duplicated by playlist id.
+function matchPlaylistsForSong(song, playlistNames) {
+  const byId = new Map();
+  [...matchPlaylistsByArtist(song.artist, playlistNames), ...matchPlaylistsByLanguage(song, playlistNames)]
+    .forEach((p) => byId.set(p.id, p));
+  return [...byId.values()];
 }
 
 // ================= Load & render song list =================
@@ -441,17 +471,12 @@ function renderSongList() {
       addBtn = `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
     }
 
-    let matchBtn = "";
-    if (s.playlistAdded) {
-      matchBtn = `<button class="added" disabled data-idx="${i}">✓ התווסף ל-${s.playlistAddedName}</button>`;
-    } else if (s.playlistAdding) {
-      matchBtn = `<button disabled data-idx="${i}">מוסיף...</button>`;
-    } else {
-      const match = playlistNames ? matchPlaylistsForArtist(s.artist, playlistNames) : null;
-      if (match && match.length) {
-        const target = match[0];
-        matchBtn = `<button class="btn-add-playlist secondary" data-idx="${i}" data-pid="${target.id}" data-pname="${target.name.replace(/"/g, "&quot;")}">+ ל-${target.name}</button>`;
-      }
+    let matchBadge = "";
+    if (s.autoAddPending) {
+      matchBadge = `<span class="pill">מוסיף לפלייליסטים...</span>`;
+    } else if (s.autoPlaylistsAdded && s.autoPlaylistsAdded.length) {
+      const names = s.autoPlaylistsAdded.map((p) => p.name).join(", ");
+      matchBadge = `<span class="pill on" title="${names.replace(/"/g, "&quot;")}">✓ ${names}</span>`;
     }
 
     return `<div class="song-row" data-row="${i}">
@@ -459,7 +484,7 @@ function renderSongList() {
         <div class="song-note">🎵</div>
         <div class="song-text"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
       </div>
-      <div style="display:flex; gap:6px; flex-shrink:0;">${matchBtn}${addBtn}</div>
+      <div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">${matchBadge}${addBtn}</div>
     </div>`;
   }).join("") + (loadedFromEnd < totalTracks
     ? `<div class="empty-note">מציג ${loadedFromEnd} מתוך ${totalTracks} - גללו למטה לעוד</div>`
@@ -467,9 +492,6 @@ function renderSongList() {
 
   el.querySelectorAll(".btn-add-one").forEach((btn) => {
     btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx)));
-  });
-  el.querySelectorAll(".btn-add-playlist").forEach((btn) => {
-    btn.addEventListener("click", () => addSongToPlaylist(Number(btn.dataset.idx), btn.dataset.pid, btn.dataset.pname));
   });
 }
 
@@ -494,22 +516,41 @@ async function addOneSong(idx) {
   renderSongList();
 }
 
-async function addSongToPlaylist(idx, playlistId, playlistName) {
-  const s = songs[idx];
-  if (s.playlistAdding || s.playlistAdded) return;
-  s.playlistAdding = true;
-  renderSongList();
-  try {
-    await spotifyApi(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
-    s.playlistAdding = false;
-    s.playlistAdded = true;
-    s.playlistAddedName = playlistName;
-    log(`נוסף "${s.name}" לפלייליסט "${playlistName}".`);
-  } catch (e) {
-    s.playlistAdding = false;
-    log(`שגיאה בהוספה לפלייליסט "${playlistName}": ${e.message}`);
+// Unlike addOneSong (Liked Songs, always manual), this runs automatically for every currently
+// loaded song once triggered: finds playlists matching the song by artist name or by
+// Hebrew/English language bucket, and adds the song to each one, logging every addition so it's
+// reviewable afterwards. autoPlaylistsAdded is tracked per song so re-running this after loading
+// more songs doesn't redo work or duplicate an addition already made.
+// Runs the actual auto-add: for each given song, finds playlists matching by artist name or
+// language bucket (skipping any already recorded on autoPlaylistsAdded) and adds the song to
+// each one, logging every addition. Shared by the manual "הוסף אוטומטית" trigger and by the
+// incremental-load paths below, so newly loaded songs get matched too once playlistNames exists.
+async function autoAddSongsToPlaylists(songsToProcess) {
+  let songsAdded = 0;
+  let totalAdds = 0;
+  for (const s of songsToProcess) {
+    if (!s.autoPlaylistsAdded) s.autoPlaylistsAdded = [];
+    const alreadyIds = new Set(s.autoPlaylistsAdded.map((p) => p.id));
+    const matches = matchPlaylistsForSong(s, playlistNames).filter((p) => !alreadyIds.has(p.id));
+    if (!matches.length) continue;
+
+    s.autoAddPending = true;
+    renderSongList();
+    for (const target of matches) {
+      try {
+        await spotifyApi(`/playlists/${target.id}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
+        s.autoPlaylistsAdded.push(target);
+        log(`נוסף "${s.name}" לפלייליסט "${target.name}".`);
+        totalAdds++;
+      } catch (e) {
+        log(`שגיאה בהוספת "${s.name}" לפלייליסט "${target.name}": ${e.message}`);
+      }
+    }
+    if (s.autoPlaylistsAdded.length) songsAdded++;
+    s.autoAddPending = false;
+    renderSongList();
   }
-  renderSongList();
+  return { songsAdded, totalAdds };
 }
 
 async function findMatchingPlaylists() {
@@ -517,11 +558,10 @@ async function findMatchingPlaylists() {
   try {
     log("קורא את שמות הפלייליסטים שלך...");
     playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
-    const matched = songs.filter((s) => matchPlaylistsForArtist(s.artist, playlistNames).length).length;
-    log(`נמצאו ${matched} שירים שמתאימים לפלייליסטים קיימים לפי שם האמן.`);
-    renderSongList();
+    const { songsAdded, totalAdds } = await autoAddSongsToPlaylists(songs);
+    log(`הושלם: ${songsAdded} שירים נוספו אוטומטית ל-${totalAdds} התאמות פלייליסט (לפי אמן/שפה).`);
   } catch (e) {
-    log("שגיאה בקריאת שמות הפלייליסטים: " + e.message);
+    log("שגיאה בהתאמת פלייליסטים: " + e.message);
   } finally {
     busy(null);
     $("btnMatchPlaylists").disabled = false;
@@ -558,6 +598,10 @@ async function loadMoreSongs() {
     loadedFromEnd += batchSize;
     renderSongList();
     log(`נטענו ${newSongs.length} שירים נוספים (${loadedFromEnd}/${totalTracks}).`);
+
+    if (playlistNames) {
+      await autoAddSongsToPlaylists(newSongs); // reuse the cached playlist index on freshly loaded songs too
+    }
   } catch (e) {
     log("שגיאה בטעינת שירים נוספים: " + e.message);
     lastLoadFailureAt = Date.now();
@@ -605,12 +649,10 @@ async function loadSongs() {
     updateLastLoadHint();
     $("btnLoad").textContent = "רענן שירים";
     $("btnMatchPlaylists").disabled = false;
-    if (playlistNames) {
-      renderSongList(); // apply the already-cached index to the newly loaded songs immediately
-    }
-    // Playlist matching no longer auto-runs on load - scanning every playlist burns through
-    // Spotify's rate limit on its own and was blocking the "+ הוסף" click right after. It's
-    // fully opt-in now: click "רענן התאמות פלייליסטים" when you actually want it.
+    // Fetching the playlist index itself stays opt-in (click "הוסף אוטומטית לפלייליסטים מתאימים") -
+    // scanning every playlist on every load burns through Spotify's rate limit on its own and was
+    // blocking the "+ הוסף" click right after. Once that index is cached, though, loadMoreSongs()
+    // reuses it automatically for every newly loaded batch - see there.
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
