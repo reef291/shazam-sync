@@ -8,56 +8,60 @@
   :root {
     color-scheme: light dark;
     --bg: #f5f5f7; --card: #ffffff; --text: #1a1a1a; --muted: #6b6b70;
-    --border: #e3e3e6; --accent: #6c3ce9; --accent2: #1db954; --ok: #1a8a4a; --err: #c0392b;
-    --pill-bg: #eee; --shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 16px rgba(0,0,0,.04);
+    --border: #e3e3e6; --accent: #6c3ce9; --accent2: #1db954; --err: #c0392b;
+    --pill-bg: #eee; --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #121214; --card: #1c1c1f; --text: #f0f0f0; --muted: #9a9a9f;
-      --border: #2c2c30; --pill-bg: #2a2a2e; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.3);
+      --bg: #101012; --card: #1c1c1f; --text: #f0f0f0; --muted: #9a9a9f;
+      --border: #2c2c30; --pill-bg: #2a2a2e; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 28px rgba(0,0,0,.4);
     }
   }
   * { box-sizing: border-box; }
   body {
     background: var(--bg); color: var(--text); font-family: system-ui, "Segoe UI", sans-serif;
-    max-width: 640px; margin: 0 auto; padding: 24px 16px 64px;
+    max-width: 620px; margin: 0 auto; padding: 20px 16px 64px;
   }
-  h1 { font-size: 1.5rem; margin: 0 0 4px; letter-spacing: -0.02em; }
-  p.sub { color: var(--muted); margin: 0 0 20px; font-size: 0.92rem; line-height: 1.5; }
 
-  .flow {
-    display: flex; align-items: center; justify-content: center; gap: 16px;
+  .hero {
+    display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--card)), color-mix(in srgb, var(--accent2) 14%, var(--card)));
+    border: 1px solid var(--border); border-radius: 18px; padding: 18px 20px; margin-bottom: 16px; box-shadow: var(--shadow);
+  }
+  .hero-icon {
+    width: 48px; height: 48px; border-radius: 14px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center; font-size: 1.5rem;
+  }
+  .hero h1 { font-size: 1.3rem; margin: 0; letter-spacing: -0.02em; }
+  .hero p { margin: 2px 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.4; }
+
+  details.setup-card {
     background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    padding: 16px; margin-bottom: 20px; box-shadow: var(--shadow);
+    margin-bottom: 14px; box-shadow: var(--shadow); overflow: hidden;
   }
-  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-  .flow-icon {
-    width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    font-size: 1.3rem; background: var(--pill-bg); border: 2px solid var(--border);
+  details.setup-card summary {
+    cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
+    padding: 14px 18px; font-weight: 600; font-size: 0.92rem;
   }
-  .flow-icon.on { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 15%, var(--pill-bg)); }
-  .flow-label { font-size: 0.72rem; color: var(--muted); text-align: center; white-space: nowrap; }
-  .flow-arrow { color: var(--border); font-size: 1.3rem; }
+  details.setup-card summary::-webkit-details-marker { display: none; }
+  .chev { color: var(--muted); transition: transform .15s; font-size: 1.1rem; }
+  details[open] .chev { transform: rotate(90deg); }
+  .setup-title { flex: 1; }
+  .setup-body { padding: 0 18px 18px; }
+  .setup-step { padding-top: 14px; border-top: 1px solid var(--border); margin-top: 14px; }
+  .setup-step:first-child { border-top: none; margin-top: 0; padding-top: 2px; }
+  .setup-step h3 { font-size: 0.86rem; margin: 0 0 6px; }
+  .setup-step p { font-size: 0.8rem; color: var(--muted); line-height: 1.5; margin: 0 0 10px; }
+  .setup-step p b { color: var(--text); }
 
-  section {
-    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
-    padding: 18px; margin-bottom: 14px; box-shadow: var(--shadow);
-  }
-  .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-  .step-num {
-    width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
-    display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 600; flex-shrink: 0;
-  }
-  section h2 { font-size: 1rem; margin: 0; flex: 1; }
   .pill {
     font-size: 0.72rem; padding: 3px 10px; border-radius: 999px; background: var(--pill-bg); color: var(--muted);
-    white-space: nowrap;
+    white-space: nowrap; font-weight: 600;
   }
-  .pill.on { background: color-mix(in srgb, var(--accent2) 20%, transparent); color: var(--accent2); font-weight: 600; }
-  .section-sub { font-size: 0.8rem; color: var(--muted); margin: 4px 0 14px; line-height: 1.45; }
-  .section-sub b { color: var(--text); }
+  .pill.on { background: color-mix(in srgb, var(--accent2) 22%, transparent); color: var(--accent2); }
 
-  label { display: block; font-size: 0.82rem; color: var(--muted); margin: 10px 0 4px; }
+  label { display: block; font-size: 0.8rem; color: var(--muted); margin: 10px 0 4px; }
   input[type=text] {
     width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); font-size: 0.9rem; font-family: inherit;
@@ -65,20 +69,32 @@
   input:focus { outline: none; border-color: var(--accent); }
 
   button {
-    background: var(--accent); color: white; border: none; border-radius: 9px;
-    padding: 10px 18px; font-size: 0.88rem; font-weight: 600; cursor: pointer; margin: 4px 6px 4px 0;
-    transition: opacity .15s;
+    background: var(--accent); color: white; border: none; border-radius: 999px;
+    padding: 10px 18px; font-size: 0.86rem; font-weight: 600; cursor: pointer; margin: 4px 6px 4px 0;
+    transition: opacity .15s, transform .1s;
   }
   button:hover:not(:disabled) { opacity: 0.88; }
+  button:active:not(:disabled) { transform: scale(0.97); }
   button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-  button.primary-big { background: var(--accent2); color: #06280f; padding: 13px 22px; font-size: 0.95rem; }
-  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary-big {
+    background: linear-gradient(135deg, var(--accent2), color-mix(in srgb, var(--accent2) 70%, var(--accent)));
+    color: #06280f; padding: 11px 22px; font-size: 0.92rem;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  small.hint { color: var(--muted); display: block; margin-top: 4px; font-size: 0.74rem; }
+  small.hint { color: var(--muted); display: block; margin-top: 6px; font-size: 0.75rem; line-height: 1.4; }
+
+  section.songs-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .songs-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 2px; }
+  .songs-head h2 { font-size: 1.05rem; margin: 0; flex: 1; }
+  .songs-actions { display: flex; flex-wrap: wrap; }
 
   .busy {
     display: none; align-items: center; gap: 10px; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 14px; margin: 10px 0; font-size: 0.83rem; color: var(--text);
+    border-radius: 10px; padding: 10px 14px; margin: 12px 0 0; font-size: 0.83rem; color: var(--text);
   }
   .busy.show { display: flex; }
   .spinner {
@@ -87,111 +103,96 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  #songList { margin-top: 12px; }
+  #songList { margin-top: 14px; }
   .song-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg);
-    margin-bottom: 8px;
+    padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg);
+    margin-bottom: 8px; transition: box-shadow .15s;
   }
-  .song-info { min-width: 0; }
+  .song-row:hover { box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .song-info { min-width: 0; display: flex; align-items: center; gap: 10px; }
+  .song-note {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; font-size: 0.85rem;
+    background: color-mix(in srgb, var(--accent) 14%, var(--pill-bg)); color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .song-text { min-width: 0; }
   .track-name { font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .track-artist { color: var(--muted); font-size: 0.85rem; }
-  .song-row button { margin: 0; flex-shrink: 0; white-space: nowrap; }
+  .track-artist { color: var(--muted); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  .song-row button { margin: 0; flex-shrink: 0; white-space: nowrap; padding: 8px 14px; font-size: 0.82rem; }
   .song-row button.added { background: var(--accent2); color: #06280f; animation: addedPop .35s ease; }
   @keyframes addedPop {
     0% { transform: scale(1); }
     45% { transform: scale(1.15); }
     100% { transform: scale(1); }
   }
-  .empty-note { color: var(--muted); font-size: 0.88rem; padding: 10px 2px; }
+  .empty-note { color: var(--muted); font-size: 0.85rem; padding: 10px 2px; text-align: center; }
 
+  details.log-details { margin-top: 14px; }
+  details.log-details summary { cursor: pointer; list-style: none; font-size: 0.78rem; color: var(--muted); }
+  details.log-details summary::-webkit-details-marker { display: none; }
   #log {
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
-    height: 140px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.76rem;
-    white-space: pre-wrap; margin-top: 14px;
+    height: 130px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.74rem;
+    white-space: pre-wrap; margin-top: 8px;
   }
-
-  details > summary { cursor: pointer; list-style: none; }
-  details > summary::-webkit-details-marker { display: none; }
-  .chev { transition: transform .15s; color: var(--muted); }
-  details[open] .chev { transform: rotate(90deg); }
 </style>
 </head>
 <body>
 
-<h1>Shazam Sync</h1>
-<p class="sub">
-  קורא ישירות את הפלייליסט שה-Shazam שלך מכניס אליו שירים אוטומטית ב-Spotify, ומציג כפתור הוספה
-  ל-Liked Songs ליד כל שיר.
-</p>
-
-<div class="flow">
-  <div class="flow-step">
-    <div class="flow-icon on">🎵</div>
-    <div class="flow-label">Shazam</div>
-  </div>
-  <div class="flow-arrow">←</div>
-  <div class="flow-step">
-    <div class="flow-icon" id="flowIconSpotify"></div>
-    <div class="flow-label">Spotify</div>
+<div class="hero">
+  <div class="hero-icon">🎧</div>
+  <div>
+    <h1>Shazam Sync</h1>
+    <p>השירים שתייגת ב-Shazam - כפתור אחד ל-Liked Songs ב-Spotify.</p>
   </div>
 </div>
 
-<section>
-  <details open>
+<details id="setupDetails" class="setup-card" open>
   <summary>
-    <div class="section-head">
-      <span class="step-num">1</span>
-      <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> חבר את Shazam ל-Spotify</h2>
-    </div>
+    <span class="chev">›</span>
+    <span class="setup-title">הגדרות חיבור</span>
+    <span class="pill" id="pillSpotify">לא מחובר</span>
   </summary>
-  <p class="section-sub">
-    באפליקציית Shazam: <b>Settings ← Connect to Spotify</b>. אחרי זה כל שיר שמתייגים נכנס אוטומטית
-    לפלייליסט בשם <b>My Shazam Tracks</b> בחשבון ה-Spotify שלך. צריך לעשות את זה פעם אחת בלבד.
-  </p>
-  </details>
-</section>
-
-<section>
-  <details open>
-  <summary>
-    <div class="section-head">
-      <span class="step-num">2</span>
-      <h2 style="display:inline-flex; align-items:center; gap:6px;"><span class="chev">›</span> Spotify</h2>
-      <span class="pill" id="pillSpotify">לא מחובר</span>
+  <div class="setup-body">
+    <div class="setup-step">
+      <h3>1. חבר את Shazam ל-Spotify</h3>
+      <p>באפליקציית Shazam: <b>Settings ← Connect to Spotify</b>. פעם אחת בלבד - אחר כך כל שיר שמתייגים נכנס אוטומטית לפלייליסט <b>My Shazam Tracks</b>.</p>
     </div>
-  </summary>
-  <p class="section-sub">אפליקציה חינמית ב-developer.spotify.com/dashboard. הוסף את הכתובת הנוכחית של הדף הזה כ-Redirect URI.</p>
-  <label>Client ID</label>
-  <input type="text" id="spotifyClientId" />
-  <small class="hint">Redirect URI לרישום ב-Spotify: <code id="redirectUriHint"></code></small>
-  <label>שם הפלייליסט שה-Shazam יוצר (בד"כ לא צריך לשנות)</label>
-  <input type="text" id="shazamPlaylistName" value="My Shazam Tracks" />
-  <div style="margin-top:12px;">
-    <button id="btnConnectSpotify">התחבר ל-Spotify</button>
+    <div class="setup-step">
+      <h3>2. חבר את Spotify כאן</h3>
+      <p>אפליקציה חינמית ב-developer.spotify.com/dashboard. הוסף את הכתובת הזו כ-Redirect URI: <code id="redirectUriHint"></code></p>
+      <label>Client ID</label>
+      <input type="text" id="spotifyClientId" />
+      <label>שם הפלייליסט (בד"כ לא צריך לשנות)</label>
+      <input type="text" id="shazamPlaylistName" value="My Shazam Tracks" />
+      <div style="margin-top:12px;">
+        <button id="btnConnectSpotify">התחבר ל-Spotify</button>
+      </div>
+    </div>
   </div>
-  </details>
-</section>
+</details>
 
-<section>
-  <div class="section-head">
-    <span class="step-num">3</span>
-    <h2>השירים שתייגת ב-Shazam</h2>
+<section class="songs-card">
+  <div class="songs-head">
+    <h2>🎵 השירים שלך</h2>
+    <div class="songs-actions">
+      <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
+      <button id="btnMatchPlaylists" class="secondary" disabled title="קורא רק את שמות הפלייליסטים שלך ומציע התאמה לפי שם אמן">התאמת פלייליסטים</button>
+    </div>
   </div>
-  <p class="section-sub">
-    מציג את 25 השירים האחרונים שתייגת, וטוען עוד 25 בכל גלילה למטה.
-    <b>שום דבר לא נוסף לשום מקום באופן אוטומטי</b> - רק בלחיצה מפורשת על הכפתור הספציפי ליד שיר ספציפי.
-  </p>
-  <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-  <button id="btnMatchPlaylists" class="secondary" disabled>רענן התאמות פלייליסטים (לפי שם אמן)</button>
   <small class="hint" id="loadHint"></small>
   <small class="hint" id="lastLoadHint"></small>
-  <small class="hint">התאמת פלייליסטים היא אופציונלית - לחצו "רענן התאמות פלייליסטים" רק כשתרצו אותה. זה קורא רק את <b>שמות</b> הפלייליסטים שלכם (בקשה אחת קלה, לא סורק את התוכן שלהם) ומחפש שם פלייליסט שמכיל את שם האמן של השיר. התוצאה נשמרת בזיכרון עד שתטענו את הדף מחדש. שיר מתאים מקבל כפתור "+ ל-&lt;שם הפלייליסט&gt;" - זו רק הצעה, ההוספה קורית אך ורק כשלוחצים עליו בעצמכם.</small>
+  <small class="hint">שום דבר לא מתווסף אוטומטית - רק בלחיצה שלך על כפתור ליד השיר.</small>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
   <div id="songList"></div>
-  <div id="log"></div>
+
+  <details class="log-details">
+    <summary>יומן פעילות</summary>
+    <div id="log"></div>
+  </details>
 </section>
 
 <script>
@@ -246,8 +247,9 @@ function updateSpotifyUi() {
   const connected = !!(tok && tok.access_token);
   $("pillSpotify").textContent = connected ? "מחובר" : "לא מחובר";
   $("pillSpotify").className = "pill" + (connected ? " on" : "");
-  $("flowIconSpotify").className = "flow-icon" + (connected ? " on" : "");
-  $("flowIconSpotify").textContent = connected ? "✓" : "🎧";
+  // Collapse the one-time setup card once already connected, so returning visitors
+  // land straight on the song list instead of re-reading the setup steps every time.
+  $("setupDetails").open = !connected;
   updateLoadButton();
 }
 
@@ -446,7 +448,10 @@ function renderSongList() {
     }
 
     return `<div class="song-row" data-row="${i}">
-      <div class="song-info"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
+      <div class="song-info">
+        <div class="song-note">🎵</div>
+        <div class="song-text"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
+      </div>
       <div style="display:flex; gap:6px; flex-shrink:0;">${matchBtn}${addBtn}</div>
     </div>`;
   }).join("") + (loadedFromEnd < totalTracks
