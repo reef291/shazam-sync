@@ -129,6 +129,22 @@
     45% { transform: scale(1.15); }
     100% { transform: scale(1); }
   }
+  .panel {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; margin-top: 12px;
+  }
+  .panel-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 8px; }
+  .pl-list { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+  .pl-item {
+    display: flex; align-items: center; gap: 8px; padding: 5px 4px; font-size: 0.85rem;
+    border-radius: 6px; cursor: pointer;
+  }
+  .pl-item:hover { background: var(--pill-bg); }
+  .preview-box {
+    background: var(--card); border: 1px solid var(--border); border-radius: 9px;
+    padding: 10px 12px; margin: 10px 0; font-size: 0.8rem; line-height: 1.6;
+    max-height: 180px; overflow-y: auto;
+  }
   .song-row.reverted { animation: revertPop .45s ease; }
   @keyframes revertPop {
     0% { transform: scale(1); opacity: 1; }
@@ -187,22 +203,19 @@
     <h2>🎵 השירים שלך</h2>
     <div class="songs-actions">
       <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-      <button id="btnMatchPlaylists" class="secondary" disabled title="קורא את שמות הפלייליסטים שלך, ומוסיף כל שיר לפלייליסטים מתאימים לפי אמן ושפה - אוטומטית">הוסף אוטומטית לפלייליסטים מתאימים</button>
-      <span id="undoAutoAddWrap"></span>
+      <button id="btnScanMatches" class="secondary" disabled title="קורא את שמות הפלייליסטים שלך ומראה מה יתווסף - בלי לשנות כלום עדיין">בדוק התאמות לפלייליסטים</button>
     </div>
   </div>
   <small class="hint" id="loadHint"></small>
   <small class="hint" id="lastLoadHint"></small>
-  <small class="hint">כפתור "+ הוסף" ליד שיר בודד הוא תמיד ידני. "הוסף אוטומטית לפלייליסטים" מוסיף לבד לפי אמן ושפה - כל הוספה מתועדת ביומן הפעילות למטה, ואפשר לבטל ריצה שלמה.</small>
-  <label style="display:flex; align-items:center; gap:6px; font-size:0.82rem; margin-top:8px;">
-    <input type="checkbox" id="alsoLikeCheckbox" />
-    גם להוסיף ל-Liked Songs את השירים שיטופלו בהרצה הזו
-  </label>
-  <div id="playlistChecklist"></div>
+  <small class="hint">כפתור "+ הוסף" ליד שיר בודד הוא תמיד ידני. "בדוק התאמות" רק מציג מה יתווסף - ההוספה עצמה קורית רק בלחיצה על כפתור האישור שיופיע.</small>
+
+  <div id="autoAddPanel"></div>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
 
   <div id="songList"></div>
+  <div id="loadMoreWrap" style="text-align:center; margin-top:10px;"></div>
 
   <details class="log-details">
     <summary>יומן פעילות</summary>
@@ -456,25 +469,8 @@ function includedPlaylistNames() {
   return (playlistNames || []).filter((p) => !excludedPlaylistIds.has(p.id));
 }
 
-function renderPlaylistChecklist() {
-  const el = $("playlistChecklist");
-  if (!playlistNames || !playlistNames.length) { el.innerHTML = ""; return; }
-  el.innerHTML = `<details class="log-details">
-    <summary>פלייליסטים לכלול בהוספה האוטומטית (${includedPlaylistNames().length}/${playlistNames.length})</summary>
-    ${playlistNames.map((p) => `
-      <label style="display:flex; align-items:center; gap:8px; padding:4px 2px; font-size:0.85rem;">
-        <input type="checkbox" data-pid="${p.id}" ${excludedPlaylistIds.has(p.id) ? "" : "checked"} />
-        ${p.name}
-      </label>`).join("")}
-  </details>`;
-  el.querySelectorAll("input[type=checkbox]").forEach((cb) => {
-    cb.addEventListener("change", () => {
-      if (cb.checked) excludedPlaylistIds.delete(cb.dataset.pid);
-      else excludedPlaylistIds.add(cb.dataset.pid);
-      LS.set("excluded_playlist_ids", [...excludedPlaylistIds]);
-      renderPlaylistChecklist();
-    });
-  });
+function esc(str) {
+  return String(str).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
 // ================= Load & render song list =================
@@ -514,13 +510,98 @@ function forgetAutoAdd(uri, playlistId) {
   LS.set("auto_playlist_adds", autoAddLog);
 }
 
-let lastRunAdds = []; // entries from the most recent explicit "הוסף אוטומטית" run, for the undo button
+// Entries from the most recent explicit run, for the undo button. Persisted so the undo option
+// survives a page reload - otherwise a refresh would silently strand whatever the last run added.
+let lastRunAdds = LS.get("last_auto_add_run", []);
+function saveLastRun() { LS.set("last_auto_add_run", lastRunAdds); }
 
-function renderUndoButton() {
-  const wrap = $("undoAutoAddWrap");
-  if (!lastRunAdds.length) { wrap.innerHTML = ""; return; }
-  wrap.innerHTML = `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>`;
-  $("btnUndoAutoAdd").addEventListener("click", undoLastAutoAddRun);
+let alsoLikeChecked = false;
+let playlistListOpen = false;
+
+// What a run would do right now, given the current playlist scope - pure computation, no writes.
+function previewAutoAdd() {
+  const rows = [];
+  for (const s of songs) {
+    const alreadyIds = new Set(getAutoAddedForUri(s.uri).map((p) => p.id));
+    const matches = matchPlaylistsForSong(s, includedPlaylistNames()).filter((p) => !alreadyIds.has(p.id));
+    if (matches.length) rows.push({ song: s, matches });
+  }
+  return rows;
+}
+
+// Updates just the parts that depend on the current scope/selection. Kept separate from the full
+// panel render so toggling a playlist checkbox doesn't rebuild (and scroll-jump) the whole list.
+function updateAutoAddPreview() {
+  if (!playlistNames) return;
+  const preview = previewAutoAdd();
+  const totalAdds = preview.reduce((n, r) => n + r.matches.length, 0);
+
+  const summary = $("plSummary");
+  if (summary) summary.textContent = `פלייליסטים שייכללו (${includedPlaylistNames().length} מתוך ${playlistNames.length}) - לחצו לפתיחה`;
+
+  const box = $("previewBox");
+  if (box) {
+    box.innerHTML = totalAdds
+      ? `יתווספו <b>${totalAdds}</b> הוספות עבור <b>${preview.length}</b> שירים:<br>` +
+        preview.slice(0, 8).map((r) => `• ${esc(r.song.name)} ← ${r.matches.map((m) => esc(m.name)).join(", ")}`).join("<br>") +
+        (preview.length > 8 ? `<br>...ועוד ${preview.length - 8} שירים` : "")
+      : "אין התאמות חדשות לשירים הטעונים כרגע.";
+  }
+
+  const runBtn = $("btnRunAutoAdd");
+  if (runBtn) {
+    runBtn.disabled = !totalAdds;
+    runBtn.textContent = `בצע הוספה (${totalAdds})`;
+  }
+}
+
+// One panel for the whole auto-add flow: which playlists are in scope, exactly what the next run
+// would add, the button that performs it, and the undo for the previous run. Rendered only after
+// "בדוק התאמות" has fetched the playlist names, so the scope and the preview are always visible
+// BEFORE anything is written to Spotify.
+function renderAutoAddPanel() {
+  const el = $("autoAddPanel");
+  if (!playlistNames) { el.innerHTML = ""; return; }
+
+  el.innerHTML = `
+    <div class="panel">
+      <div class="panel-title">הוספה אוטומטית לפלייליסטים</div>
+      <details class="log-details" ${playlistListOpen ? "open" : ""}>
+        <summary id="plSummary"></summary>
+        <div class="pl-list">
+          ${playlistNames.map((p) => `
+            <label class="pl-item">
+              <input type="checkbox" data-pid="${esc(p.id)}" ${excludedPlaylistIds.has(p.id) ? "" : "checked"} />
+              <span>${esc(p.name)}</span>
+            </label>`).join("")}
+        </div>
+      </details>
+      <label class="pl-item" style="margin-top:8px;">
+        <input type="checkbox" id="alsoLikeCheckbox" ${alsoLikeChecked ? "checked" : ""} />
+        <span>להוסיף גם ל-Liked Songs את השירים שיטופלו</span>
+      </label>
+      <div class="preview-box" id="previewBox"></div>
+      <div>
+        <button id="btnRunAutoAdd" class="primary-big">בצע הוספה</button>
+        ${lastRunAdds.length ? `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>` : ""}
+      </div>
+    </div>`;
+
+  el.querySelector("details").addEventListener("toggle", (e) => { playlistListOpen = e.target.open; });
+  el.querySelectorAll(".pl-list input[type=checkbox]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) excludedPlaylistIds.delete(cb.dataset.pid);
+      else excludedPlaylistIds.add(cb.dataset.pid);
+      LS.set("excluded_playlist_ids", [...excludedPlaylistIds]);
+      updateAutoAddPreview();
+    });
+  });
+  $("alsoLikeCheckbox").addEventListener("change", (e) => { alsoLikeChecked = e.target.checked; });
+  $("btnRunAutoAdd").addEventListener("click", confirmAndRunAutoAdd);
+  const undoBtn = $("btnUndoAutoAdd");
+  if (undoBtn) undoBtn.addEventListener("click", undoLastAutoAddRun);
+
+  updateAutoAddPreview();
 }
 
 // Removes exactly the tracks the last run added, and only those - by the exact position each one
@@ -529,7 +610,8 @@ function renderUndoButton() {
 async function undoLastAutoAddRun() {
   const toUndo = lastRunAdds;
   lastRunAdds = [];
-  renderUndoButton();
+  saveLastRun();
+  renderAutoAddPanel();
   log(`מבטל ${toUndo.length} הוספות מהריצה האחרונה...`);
   // Highest position first, so removing one doesn't shift the position of another one still
   // pending in the same playlist within this same undo batch.
@@ -556,6 +638,7 @@ async function undoLastAutoAddRun() {
     songs.forEach((s) => { if (revertedUris.has(s.uri)) s.justReverted = false; });
     renderSongList();
   }, 450);
+  renderAutoAddPanel(); // the undone songs become eligible again, so the preview count changes
   log("הביטול הושלם.");
 }
 
@@ -594,18 +677,35 @@ function renderSongList() {
       <div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">${matchBadge}${addBtn}</div>
     </div>`;
   }).join("") + (loadedFromEnd < totalTracks
-    ? `<div class="empty-note">מציג ${loadedFromEnd} מתוך ${totalTracks} - גללו למטה לעוד</div>`
+    ? `<div class="empty-note">מציג ${loadedFromEnd} מתוך ${totalTracks}</div>`
     : (totalTracks ? `<div class="empty-note">מוצגים כל ${totalTracks} השירים.</div>` : ""));
+
+  renderLoadMoreButton();
 
   el.querySelectorAll(".btn-add-one").forEach((btn) => {
     btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx)));
   });
 }
 
+// Loading the next batch is an explicit click rather than a scroll trigger, so the user controls
+// when more songs (and therefore more potential matches) come into scope.
+function renderLoadMoreButton() {
+  const wrap = $("loadMoreWrap");
+  if (isLoadingMore) {
+    wrap.innerHTML = `<button class="secondary" disabled>טוען...</button>`;
+    return;
+  }
+  if (!songs.length || loadedFromEnd >= totalTracks) { wrap.innerHTML = ""; return; }
+  const remaining = totalTracks - loadedFromEnd;
+  const next = Math.min(PAGE_SIZE, remaining);
+  wrap.innerHTML = `<button id="btnLoadMore" class="secondary">טען ${next} שירים נוספים (נותרו ${remaining})</button>`;
+  $("btnLoadMore").addEventListener("click", loadMoreSongs);
+}
+
 // Add-in-progress/added state lives on the song object itself (not on the clicked DOM node),
-// so it survives a full renderSongList() rebuild triggered by infinite scroll while this request
-// is still in flight - otherwise the completion handler was updating a button already detached
-// from the page, and the freshly rendered one never picked up the new state.
+// so it survives a full renderSongList() rebuild while this request is still in flight -
+// otherwise the completion handler was updating a button already detached from the page, and the
+// freshly rendered one never picked up the new state.
 async function addOneSong(idx) {
   const s = songs[idx];
   if (s.adding || s.inLiked || s.added) return;
@@ -623,14 +723,11 @@ async function addOneSong(idx) {
   renderSongList();
 }
 
-// Unlike addOneSong (Liked Songs, always manual), this runs automatically for every given song:
-// finds playlists matching by artist name or Hebrew/English language bucket, and adds the song to
-// each one not already recorded in the persistent autoAddLog, logging every addition. Shared by
-// the manual "הוסף אוטומטית" trigger and by the incremental-load path in loadMoreSongs, so newly
-// loaded songs get matched too once playlistNames is already cached.
-// trackArray, when given, also collects each addition (with the exact insert position, needed for
-// a safe undo) - only the explicit button-triggered run does this, so "undo last run" means
-// exactly what the user clicked, not incidental scroll-triggered matches.
+// Called only from confirmAndRunAutoAdd, after the user has reviewed the preview and confirmed:
+// adds each song to the matching playlists not already recorded in the persistent autoAddLog,
+// logging every addition.
+// trackArray collects each addition with the exact insert position, which is what makes the undo
+// able to remove precisely what this run added and nothing else.
 // alsoLike, when true, additionally saves every processed song to Liked Songs (independent of
 // whether it matched any playlist) - a separate, explicit opt-in per run, not a default.
 async function autoAddSongsToPlaylists(songsToProcess, trackArray = null, alsoLike = false) {
@@ -684,23 +781,47 @@ async function autoAddSongsToPlaylists(songsToProcess, trackArray = null, alsoLi
   return { songsAdded, totalAdds };
 }
 
-async function findMatchingPlaylists() {
-  $("btnMatchPlaylists").disabled = true;
-  lastRunAdds = [];
-  renderUndoButton();
-  const alsoLike = $("alsoLikeCheckbox").checked;
+// Step 1: read the playlist names and show the panel. Deliberately makes no changes at all -
+// the user picks the scope and reviews the preview before any write happens.
+async function scanForMatches() {
+  $("btnScanMatches").disabled = true;
   try {
     log("קורא את שמות הפלייליסטים שלך...");
     playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
-    renderPlaylistChecklist();
-    const { songsAdded, totalAdds } = await autoAddSongsToPlaylists(songs, lastRunAdds, alsoLike);
-    log(`הושלם: ${songsAdded} שירים נוספו אוטומטית ל-${totalAdds} התאמות פלייליסט (לפי אמן/שפה).`);
-    renderUndoButton();
+    playlistListOpen = true;
+    renderAutoAddPanel();
+    log(`נמצאו ${playlistNames.length} פלייליסטים. לא בוצע שום שינוי - בדקו את ההתאמות ולחצו "בצע הוספה".`);
   } catch (e) {
-    log("שגיאה בהתאמת פלייליסטים: " + e.message);
+    log("שגיאה בקריאת הפלייליסטים: " + e.message);
   } finally {
     busy(null);
-    $("btnMatchPlaylists").disabled = false;
+    $("btnScanMatches").disabled = false;
+  }
+}
+
+// Step 2: the only place that actually writes playlist additions, and only from an explicit click
+// on the preview panel's own button.
+async function confirmAndRunAutoAdd() {
+  const preview = previewAutoAdd();
+  const totalAdds = preview.reduce((n, r) => n + r.matches.length, 0);
+  if (!totalAdds) return;
+
+  const likeLine = alsoLikeChecked
+    ? ` בנוסף, ${preview.length} השירים האלה יתווספו גם ל-Liked Songs.`
+    : " לא ייגע ב-Liked Songs.";
+  if (!confirm(`לבצע ${totalAdds} הוספות עבור ${preview.length} שירים, בפלייליסטים שסימנת?${likeLine}\n\nאפשר לבטל את הריצה הזו בשלמותה מיד אחרי, בכפתור "בטל את ההוספה האחרונה".`)) return;
+
+  $("btnRunAutoAdd").disabled = true;
+  lastRunAdds = [];
+  try {
+    const { songsAdded, totalAdds: done } = await autoAddSongsToPlaylists(songs, lastRunAdds, alsoLikeChecked);
+    log(`הושלם: ${songsAdded} שירים נוספו ל-${done} התאמות פלייליסט.`);
+  } catch (e) {
+    log("שגיאה בהוספה האוטומטית: " + e.message);
+  } finally {
+    saveLastRun();
+    busy(null);
+    renderAutoAddPanel();
   }
 }
 
@@ -709,6 +830,7 @@ async function loadMoreSongs() {
   if (isLoadingMore || loadedFromEnd >= totalTracks || !shazamSourcePlaylistId) return;
   if (Date.now() - lastLoadFailureAt < LOAD_FAILURE_COOLDOWN_MS) return;
   isLoadingMore = true;
+  renderLoadMoreButton();
   try {
     const remaining = totalTracks - loadedFromEnd;
     const batchSize = Math.min(PAGE_SIZE, remaining);
@@ -735,15 +857,16 @@ async function loadMoreSongs() {
     renderSongList();
     log(`נטענו ${newSongs.length} שירים נוספים (${loadedFromEnd}/${totalTracks}).`);
 
-    if (playlistNames) {
-      await autoAddSongsToPlaylists(newSongs); // reuse the cached playlist index on freshly loaded songs too
-    }
+    // Newly loaded songs are never auto-added on their own - loading songs must stay a read-only
+    // action. They just widen the preview, and the user decides whether to run the add.
+    renderAutoAddPanel();
   } catch (e) {
     log("שגיאה בטעינת שירים נוספים: " + e.message);
     lastLoadFailureAt = Date.now();
   } finally {
     busy(null);
     isLoadingMore = false;
+    renderLoadMoreButton();
   }
 }
 
@@ -779,16 +902,14 @@ async function loadSongs() {
     if (!totalTracks) { log("הפלייליסט ריק - אין עדיין שירים מתויגים."); return; }
 
     await loadMoreSongs(); // loads the first (most recent) PAGE_SIZE songs
-    log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים (${totalTracks - songs.length} נוספים בגלילה).`);
+    log(`מוצגים ${songs.length} מתוך ${totalTracks} שירים.`);
 
     lastLoadAt = new Date();
     updateLastLoadHint();
     $("btnLoad").textContent = "רענן שירים";
-    $("btnMatchPlaylists").disabled = false;
-    // Fetching the playlist index itself stays opt-in (click "הוסף אוטומטית לפלייליסטים מתאימים") -
-    // scanning every playlist on every load burns through Spotify's rate limit on its own and was
-    // blocking the "+ הוסף" click right after. Once that index is cached, though, loadMoreSongs()
-    // reuses it automatically for every newly loaded batch - see there.
+    $("btnScanMatches").disabled = false;
+    // Reading the playlist list stays opt-in (click "בדוק התאמות") - scanning on every load burns
+    // through Spotify's rate limit on its own and was blocking the "+ הוסף" click right after.
   } catch (e) {
     log("שגיאה כללית: " + e.message);
   } finally {
@@ -797,22 +918,11 @@ async function loadSongs() {
   }
 }
 
-// ---------- infinite scroll ----------
-window.addEventListener("scroll", () => {
-  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) {
-    loadMoreSongs();
-  }
-});
 
 // ---------- wiring ----------
 $("btnConnectSpotify").addEventListener("click", connectSpotify);
 $("btnLoad").addEventListener("click", loadSongs);
-$("btnMatchPlaylists").addEventListener("click", () => {
-  const alsoLike = $("alsoLikeCheckbox").checked;
-  const likeLine = alsoLike ? " וגם ל-Liked Songs (הסימון שלך למטה מסומן)." : " (בלי לגעת ב-Liked Songs - הסימון למטה לא מסומן).";
-  const ok = confirm(`הפעולה תוסיף עכשיו, אוטומטית ובלי אישור נוסף, את כל ${songs.length} השירים הטעונים לכל פלייליסט שמתאים להם לפי אמן או שפה${likeLine} אפשר לבטל את הריצה הזו בשלמותה אחר כך בכפתור שיופיע. להמשיך?`);
-  if (ok) findMatchingPlaylists();
-});
+$("btnScanMatches").addEventListener("click", scanForMatches);
 
 handleSpotifyRedirect().then(() => { updateSpotifyUi(); });
 </script>
