@@ -108,11 +108,12 @@
 
   #songList { margin-top: 14px; }
   .song-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    display: flex; flex-direction: column; gap: 8px;
     padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg);
     margin-bottom: 8px; transition: box-shadow .15s;
   }
   .song-row:hover { box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .song-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .song-info { min-width: 0; display: flex; align-items: center; gap: 10px; }
   .song-note {
     width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; font-size: 0.85rem;
@@ -122,8 +123,26 @@
   .song-text { min-width: 0; }
   .track-name { font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track-artist { color: var(--muted); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
-  .song-row button { margin: 0; flex-shrink: 0; white-space: nowrap; padding: 8px 14px; font-size: 0.82rem; }
-  .song-row button.added { background: var(--accent2); color: #06280f; animation: addedPop .35s ease; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-size: 0.73rem; padding: 4px 10px; border-radius: 999px; margin: 0; font-weight: 500;
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); opacity: 1; }
+  .chip.on {
+    background: color-mix(in srgb, var(--accent2) 18%, transparent);
+    color: var(--accent2); border-color: var(--accent2); font-weight: 600;
+    animation: addedPop .35s ease;
+  }
+  .chip.on:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+  .chip-like { border-color: var(--border); }
+  .chip-like.on {
+    background: color-mix(in srgb, #e0245e 18%, transparent);
+    color: #e0245e; border-color: #e0245e;
+  }
+  .chips-note { font-size: 0.72rem; color: var(--muted); }
   @keyframes addedPop {
     0% { transform: scale(1); }
     45% { transform: scale(1.15); }
@@ -203,12 +222,12 @@
     <h2>🎵 השירים שלך</h2>
     <div class="songs-actions">
       <button id="btnLoad" class="primary-big" disabled>טען שירים</button>
-      <button id="btnScanMatches" class="secondary" disabled title="קורא את שמות הפלייליסטים שלך ומראה מה יתווסף - בלי לשנות כלום עדיין">בדוק התאמות לפלייליסטים</button>
+      <button id="btnScanMatches" class="secondary" disabled title="קורא את הפלייליסטים שלך ואת התוכן שלהם - בלי לשנות כלום">טען פלייליסטים</button>
     </div>
   </div>
   <small class="hint" id="loadHint"></small>
   <small class="hint" id="lastLoadHint"></small>
-  <small class="hint">כפתור "+ הוסף" ליד שיר בודד הוא תמיד ידני. "בדוק התאמות" רק מציג מה יתווסף - ההוספה עצמה קורית רק בלחיצה על כפתור האישור שיופיע.</small>
+  <small class="hint">אחרי "טען פלייליסטים" יופיעו ליד כל שיר כל הפלייליסטים שלך: <b>ירוק = השיר נמצא שם</b>. לחיצה מוסיפה או מסירה. כל הסרה מבקשת אישור, וכל פעולה נרשמת ביומן הפעילות למטה.</small>
 
   <div id="autoAddPanel"></div>
 
@@ -403,6 +422,31 @@ async function checkLikedBatch(uris) {
   return Array.isArray(res) ? res : uris.map(() => false);
 }
 
+// Spotify has no "which playlists contain this track" endpoint, so knowing whether a song is
+// already in a playlist means reading each playlist's track URIs once. This is the expensive call
+// in the whole tool, which is why it's behind an explicit button and cached in memory afterwards -
+// every per-song toggle then answers instantly from the cache.
+async function fetchPlaylistMembership(playlists) {
+  const map = new Map();
+  const fields = encodeURIComponent("items(item(uri),track(uri)),next");
+  for (let i = 0; i < playlists.length; i++) {
+    const p = playlists[i];
+    busy(`קורא תוכן פלייליסטים (${i + 1}/${playlists.length}): ${p.name}`);
+    const uris = new Set();
+    let url = `/playlists/${p.id}/items?limit=100&fields=${fields}`;
+    while (url) {
+      const page = await spotifyApi(url);
+      (page.items || []).forEach((entry) => {
+        const it = entry.item || entry.track;
+        if (it && it.uri) uris.add(it.uri);
+      });
+      url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
+    }
+    map.set(p.id, uris);
+  }
+  return map;
+}
+
 // ---------- playlist name list (for "suggest a matching playlist" feature) ----------
 // Matches by comparing the artist's name against playlist names only - no scanning of playlist
 // contents at all, so this is just one cheap paginated call instead of dozens.
@@ -482,6 +526,7 @@ function updateLoadButton() {
 
 let songs = []; // { name, artist, uri, inLiked }, newest-first
 let playlistNames = null; // [{id, name}], built on demand
+let playlistTracks = null; // Map playlistId -> Set of track URIs currently in it
 let excludedPlaylistIds = new Set(LS.get("excluded_playlist_ids", []));
 let shazamSourcePlaylistId = null;
 let totalTracks = 0;
@@ -518,12 +563,18 @@ function saveLastRun() { LS.set("last_auto_add_run", lastRunAdds); }
 let alsoLikeChecked = false;
 let playlistListOpen = false;
 
+// Real playlist membership when we have it, falling back to our own add-log when we don't.
+// Actual membership is the better answer: it also knows about songs the user added by hand.
+function isInPlaylist(uri, playlistId) {
+  if (playlistTracks && playlistTracks.has(playlistId)) return playlistTracks.get(playlistId).has(uri);
+  return getAutoAddedForUri(uri).some((p) => p.id === playlistId);
+}
+
 // What a run would do right now, given the current playlist scope - pure computation, no writes.
 function previewAutoAdd() {
   const rows = [];
   for (const s of songs) {
-    const alreadyIds = new Set(getAutoAddedForUri(s.uri).map((p) => p.id));
-    const matches = matchPlaylistsForSong(s, includedPlaylistNames()).filter((p) => !alreadyIds.has(p.id));
+    const matches = matchPlaylistsForSong(s, includedPlaylistNames()).filter((p) => !isInPlaylist(s.uri, p.id));
     if (matches.length) rows.push({ song: s, matches });
   }
   return rows;
@@ -624,6 +675,7 @@ async function undoLastAutoAddRun() {
         body: JSON.stringify({ tracks: [{ uri: entry.uri, positions: [entry.position] }] }),
       });
       forgetAutoAdd(entry.uri, entry.playlistId);
+      if (playlistTracks && playlistTracks.has(entry.playlistId)) playlistTracks.get(entry.playlistId).delete(entry.uri);
       revertedUris.add(entry.uri);
       log(`הוסר "${entry.songName}" מהפלייליסט "${entry.playlistName}".`);
     } catch (e) {
@@ -649,32 +701,34 @@ function renderSongList() {
     return;
   }
   el.innerHTML = songs.map((s, i) => {
-    let addBtn;
-    if (s.inLiked || s.added) {
-      addBtn = `<button class="added" disabled data-idx="${i}">✓ ${s.added ? "התווסף" : "כבר ב-Liked Songs"}</button>`;
-    } else if (s.adding) {
-      addBtn = `<button disabled data-idx="${i}">מוסיף...</button>`;
-    } else {
-      addBtn = `<button class="btn-add-one" data-idx="${i}">+ הוסף</button>`;
-    }
+    // The heart chip is the single source of truth for Liked Songs - filled means the song is
+    // currently saved, clicking toggles it in whichever direction applies.
+    const likeChip = `<button class="chip chip-like${s.inLiked ? " on" : ""}" data-like="${i}" ${s.likedPending ? "disabled" : ""}>${
+      s.likedPending ? "..." : (s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים")
+    }</button>`;
 
-    let matchBadge = "";
-    if (s.autoAddPending) {
-      matchBadge = `<span class="pill">מוסיף לפלייליסטים...</span>`;
+    let playlistChips;
+    if (!playlistTracks) {
+      playlistChips = `<span class="chips-note">לחצו "טען פלייליסטים" כדי לנהל שיוך לפלייליסטים.</span>`;
     } else {
-      const added = getAutoAddedForUri(s.uri);
-      if (added.length) {
-        const names = added.map((p) => p.name).join(", ");
-        matchBadge = `<span class="pill on" title="${names.replace(/"/g, "&quot;")}">✓ ${names}</span>`;
-      }
+      playlistChips = playlistNames.map((p) => {
+        const inIt = playlistTracks.get(p.id).has(s.uri);
+        const pending = s.pendingPlaylists && s.pendingPlaylists.has(p.id);
+        return `<button class="chip${inIt ? " on" : ""}" data-idx="${i}" data-pid="${esc(p.id)}" ${pending ? "disabled" : ""} title="${
+          inIt ? `לחצו כדי להסיר מ-${esc(p.name)}` : `לחצו כדי להוסיף ל-${esc(p.name)}`
+        }">${pending ? "..." : (inIt ? "✓ " : "+ ") + esc(p.name)}</button>`;
+      }).join("");
     }
 
     return `<div class="song-row${s.justReverted ? " reverted" : ""}" data-row="${i}">
-      <div class="song-info">
-        <div class="song-note">🎵</div>
-        <div class="song-text"><span class="track-name">${s.name}</span><span class="track-artist">${s.artist}</span></div>
+      <div class="song-top">
+        <div class="song-info">
+          <div class="song-note">🎵</div>
+          <div class="song-text"><span class="track-name">${esc(s.name)}</span><span class="track-artist">${esc(s.artist)}</span></div>
+        </div>
+        ${likeChip}
       </div>
-      <div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">${matchBadge}${addBtn}</div>
+      <div class="chips">${playlistChips}</div>
     </div>`;
   }).join("") + (loadedFromEnd < totalTracks
     ? `<div class="empty-note">מציג ${loadedFromEnd} מתוך ${totalTracks}</div>`
@@ -682,9 +736,13 @@ function renderSongList() {
 
   renderLoadMoreButton();
 
-  el.querySelectorAll(".btn-add-one").forEach((btn) => {
-    btn.addEventListener("click", () => addOneSong(Number(btn.dataset.idx)));
+  el.querySelectorAll("[data-like]").forEach((btn) => {
+    btn.addEventListener("click", () => toggleLiked(Number(btn.dataset.like)));
   });
+  el.querySelectorAll(".chip[data-pid]").forEach((btn) => {
+    btn.addEventListener("click", () => togglePlaylistMembership(Number(btn.dataset.idx), btn.dataset.pid));
+  });
+
 }
 
 // Loading the next batch is an explicit click rather than a scroll trigger, so the user controls
@@ -702,25 +760,66 @@ function renderLoadMoreButton() {
   $("btnLoadMore").addEventListener("click", loadMoreSongs);
 }
 
-// Add-in-progress/added state lives on the song object itself (not on the clicked DOM node),
-// so it survives a full renderSongList() rebuild while this request is still in flight -
-// otherwise the completion handler was updating a button already detached from the page, and the
-// freshly rendered one never picked up the new state.
-async function addOneSong(idx) {
+// In-flight/added state lives on the song object itself (not on the clicked DOM node), so it
+// survives a full renderSongList() rebuild while the request is still going - otherwise the
+// completion handler updates a button already detached from the page, and the freshly rendered
+// one never picks up the new state.
+async function toggleLiked(idx) {
   const s = songs[idx];
-  if (s.adding || s.inLiked || s.added) return;
-  s.adding = true;
+  if (s.likedPending) return;
+  const removing = s.inLiked;
+  if (removing && !confirm(`להסיר את "${s.name}" מ-Liked Songs?`)) return;
+
+  s.likedPending = true;
   renderSongList();
   try {
-    await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: "PUT" });
-    s.adding = false;
-    s.added = true;
-    log(`נוסף: ${s.name} - ${s.artist}`);
+    await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: removing ? "DELETE" : "PUT" });
+    s.inLiked = !removing;
+    log(removing ? `הוסר מ-Liked Songs: ${s.name}` : `נוסף ל-Liked Songs: ${s.name} - ${s.artist}`);
   } catch (e) {
-    s.adding = false;
-    log(`שגיאה בהוספת "${s.name}": ${e.message}`);
+    log(`שגיאה ב${removing ? "הסרת" : "הוספת"} "${s.name}": ${e.message}`);
   }
+  s.likedPending = false;
   renderSongList();
+}
+
+// Adds or removes the song from one playlist, whichever the current membership implies.
+// Removal deletes every occurrence of the URI in that playlist (no positions given), because here
+// the user's intent is "this song should not be in this playlist" - unlike the run-undo, which is
+// position-scoped precisely so it won't disturb copies it didn't add.
+async function togglePlaylistMembership(idx, playlistId) {
+  const s = songs[idx];
+  const p = playlistNames.find((x) => x.id === playlistId);
+  if (!p || !playlistTracks) return;
+  if (!s.pendingPlaylists) s.pendingPlaylists = new Set();
+  if (s.pendingPlaylists.has(playlistId)) return;
+
+  const set = playlistTracks.get(playlistId);
+  const removing = set.has(s.uri);
+  if (removing && !confirm(`להסיר את "${s.name}" מהפלייליסט "${p.name}"?`)) return;
+
+  s.pendingPlaylists.add(playlistId);
+  renderSongList();
+  try {
+    if (removing) {
+      await spotifyApi(`/playlists/${playlistId}/tracks`, {
+        method: "DELETE",
+        body: JSON.stringify({ tracks: [{ uri: s.uri }] }),
+      });
+      set.delete(s.uri);
+      forgetAutoAdd(s.uri, playlistId); // keep the auto-add bookkeeping honest about what's there
+      log(`הוסר "${s.name}" מהפלייליסט "${p.name}".`);
+    } else {
+      await spotifyApi(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
+      set.add(s.uri);
+      log(`נוסף "${s.name}" לפלייליסט "${p.name}".`);
+    }
+  } catch (e) {
+    log(`שגיאה ב${removing ? "הסרת" : "הוספת"} "${s.name}" ${removing ? "מ" : "ל"}"${p.name}": ${e.message}`);
+  }
+  s.pendingPlaylists.delete(playlistId);
+  renderSongList();
+  renderAutoAddPanel(); // membership changed, so the auto-add preview may too
 }
 
 // Called only from confirmAndRunAutoAdd, after the user has reviewed the preview and confirmed:
@@ -744,32 +843,31 @@ async function autoAddSongsToPlaylists(songsToProcess, trackArray = null, alsoLi
   }
 
   for (const s of songsToProcess) {
-    const alreadyIds = new Set(getAutoAddedForUri(s.uri).map((p) => p.id));
-    const matches = matchPlaylistsForSong(s, includedPlaylistNames()).filter((p) => !alreadyIds.has(p.id));
+    const matches = matchPlaylistsForSong(s, includedPlaylistNames()).filter((p) => !isInPlaylist(s.uri, p.id));
 
     if (matches.length) {
-      s.autoAddPending = true;
-      renderSongList();
+      let addedForThisSong = 0;
       for (const target of matches) {
         try {
           const position = await nextPositionFor(target.id);
           await spotifyApi(`/playlists/${target.id}/items`, { method: "POST", body: JSON.stringify({ uris: [s.uri] }) });
           recordAutoAdd(s.uri, target.id, target.name, position);
+          if (playlistTracks && playlistTracks.has(target.id)) playlistTracks.get(target.id).add(s.uri);
           if (trackArray) trackArray.push({ uri: s.uri, playlistId: target.id, playlistName: target.name, position, songName: s.name });
           log(`נוסף "${s.name}" לפלייליסט "${target.name}".`);
           totalAdds++;
+          addedForThisSong++;
         } catch (e) {
           log(`שגיאה בהוספת "${s.name}" לפלייליסט "${target.name}": ${e.message}`);
         }
       }
-      if (getAutoAddedForUri(s.uri).length) songsAdded++;
-      s.autoAddPending = false;
+      if (addedForThisSong) songsAdded++;
     }
 
-    if (alsoLike && !s.inLiked && !s.added) {
+    if (alsoLike && !s.inLiked) {
       try {
         await spotifyApi(`/me/library?uris=${encodeURIComponent(s.uri)}`, { method: "PUT" });
-        s.added = true;
+        s.inLiked = true;
         log(`נוסף גם ל-Liked Songs: "${s.name}".`);
       } catch (e) {
         log(`שגיאה בהוספת "${s.name}" ל-Liked Songs: ${e.message}`);
@@ -781,16 +879,19 @@ async function autoAddSongsToPlaylists(songsToProcess, trackArray = null, alsoLi
   return { songsAdded, totalAdds };
 }
 
-// Step 1: read the playlist names and show the panel. Deliberately makes no changes at all -
-// the user picks the scope and reviews the preview before any write happens.
+// Reads the playlist list and each playlist's contents. Makes no changes at all - it's what
+// enables both the per-song chips and the auto-add preview to show real, current state.
 async function scanForMatches() {
   $("btnScanMatches").disabled = true;
   try {
     log("קורא את שמות הפלייליסטים שלך...");
     playlistNames = await fetchOwnedPlaylistNames(shazamSourcePlaylistId);
+    log(`נמצאו ${playlistNames.length} פלייליסטים. קורא את התוכן שלהם...`);
+    playlistTracks = await fetchPlaylistMembership(playlistNames);
     playlistListOpen = true;
+    renderSongList();
     renderAutoAddPanel();
-    log(`נמצאו ${playlistNames.length} פלייליסטים. לא בוצע שום שינוי - בדקו את ההתאמות ולחצו "בצע הוספה".`);
+    log(`מוכן. לא בוצע שום שינוי - אפשר לנהל כל שיר בנפרד, או להריץ הוספה אוטומטית.`);
   } catch (e) {
     log("שגיאה בקריאת הפלייליסטים: " + e.message);
   } finally {
