@@ -330,7 +330,11 @@ async function spotifyApi(path, options = {}, retriesLeft = 5) {
     return spotifyApi(path, options, retriesLeft - 1);
   }
   if (!resp.ok) throw new Error(`Spotify API ${path} -> ${resp.status}`);
-  return resp.status === 204 ? null : resp.json();
+  // Some endpoints (e.g. the unified /me/library write) return 200 with an empty body instead of
+  // 204, so resp.json() on an empty string throws "Unexpected end of JSON input" - which made a
+  // successful add look like a failure and left the button stuck on "+ הוסף".
+  const text = await resp.text();
+  return text ? JSON.parse(text) : null;
 }
 
 async function findPlaylistIdByName(name) {
