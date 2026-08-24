@@ -914,9 +914,18 @@ function updateAutoAddPreview() {
 // would add, the button that performs it, and the undo for the previous run. Rendered only after
 // "בדוק התאמות" has fetched the playlist names, so the scope and the preview are always visible
 // BEFORE anything is written to Spotify.
+function buildPatternText(meta) {
+  const catLabels = meta.cats.map((c) => CATEGORY_BY_ID[c] && CATEGORY_BY_ID[c].label).filter(Boolean);
+  const notLabels = meta.notCats.map((c) => CATEGORY_BY_ID[c] && `בלי ${CATEGORY_BY_ID[c].label}`).filter(Boolean);
+  return catLabels.concat(notLabels, meta.terms ? [meta.terms] : []).join(" · ") || "לא זוהה דפוס - לחצו להגדרה";
+}
+
 function renderAutoAddPanel() {
   const el = $("autoAddPanel");
   if (!playlistNames) { el.innerHTML = ""; return; }
+  // The list scrolls internally, so a rebuild would otherwise snap it back to the top and make
+  // the page appear to jump every time a row is expanded.
+  const priorScroll = el.querySelector(".pl-list") ? el.querySelector(".pl-list").scrollTop : 0;
 
   // Playlists that would receive something are listed first and marked, so the ones that matter
   // are visible without scrolling a long list.
@@ -938,9 +947,7 @@ function renderAutoAddPanel() {
             const meta = getMeta(p.id);
             const inCount = songs.filter((s) => isInPlaylist(s.uri, p.id)).length;
             const pending = pendingByPlaylist[p.id] || 0;
-            const catLabels = meta.cats.map((c) => CATEGORY_BY_ID[c] && CATEGORY_BY_ID[c].label).filter(Boolean);
-            const notLabels = meta.notCats.map((c) => CATEGORY_BY_ID[c] && `בלי ${CATEGORY_BY_ID[c].label}`).filter(Boolean);
-            const patternText = catLabels.concat(notLabels, meta.terms ? [meta.terms] : []).join(" · ") || "לא זוהה דפוס - לחצו להגדרה";
+            const patternText = buildPatternText(meta);
             return `
             <div class="pl-row">
               <div class="pl-row-top">
@@ -986,6 +993,9 @@ function renderAutoAddPanel() {
       </div>
     </div>`;
 
+  const listEl = el.querySelector(".pl-list");
+  if (listEl) listEl.scrollTop = priorScroll;
+
   el.querySelector("details").addEventListener("toggle", (e) => { playlistListOpen = e.target.open; });
   el.querySelectorAll("[data-expand]").forEach((node) => {
     node.addEventListener("click", () => {
@@ -1005,6 +1015,8 @@ function renderAutoAddPanel() {
     });
   });
   // Three-state cycle: ignored -> include -> exclude -> ignored.
+  // Updated in place rather than re-rendering the panel: a rebuild reset the list's scroll and
+  // reordered the rows underneath the cursor, so every click looked like the page jumping.
   el.querySelectorAll("button[data-cat]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const pid = btn.dataset.catpl;
@@ -1017,7 +1029,17 @@ function renderAutoAddPanel() {
       if (!isOn && !isNot) meta.cats.push(cat);
       else if (isOn) meta.notCats.push(cat);
       setMeta(pid, meta);
-      renderAutoAddPanel();
+
+      const nowOn = meta.cats.includes(cat);
+      const nowNot = meta.notCats.includes(cat);
+      btn.classList.toggle("on", nowOn);
+      btn.classList.toggle("not", nowNot);
+      btn.textContent = (nowNot ? "≠ " : "") + CATEGORY_BY_ID[cat].label;
+
+      const patternEl = el.querySelector(`.pl-pattern[data-expand="${pid}"]`);
+      if (patternEl) patternEl.textContent = buildPatternText(meta);
+      renderSongList(); // a veto can change which playlists a song is eligible for
+      updateAutoAddPreview();
     });
   });
   // Saved on input (not on blur) so text typed and immediately acted on isn't lost.
@@ -1026,6 +1048,8 @@ function renderAutoAddPanel() {
       const meta = getMeta(inp.dataset.desc);
       meta.terms = inp.value.trim();
       setMeta(inp.dataset.desc, meta);
+      const patternEl = el.querySelector(`.pl-pattern[data-expand="${inp.dataset.desc}"]`);
+      if (patternEl) patternEl.textContent = buildPatternText(meta);
       updateAutoAddPreview();
     });
   });
