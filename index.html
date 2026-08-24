@@ -550,7 +550,10 @@ async function readPlaylistContent(playlistId) {
 async function refreshPlaylistMembership(playlists, cache) {
   const stale = playlists.filter((p) => {
     const entry = cache.get(p.id);
-    return !entry || entry.snapshot !== p.snapshot;
+    if (!entry || entry.snapshot !== p.snapshot) return true;
+    // Entries cached before sampling existed carry no sampleNames, and their snapshot still
+    // matches - so without this they'd never be re-read and content detection would see nothing.
+    return !entry.sampleNames || !entry.sampleNames.length;
   });
 
   if (!stale.length) {
@@ -688,11 +691,15 @@ function detectCategoriesFromContent(entry) {
         if (genres.some((g) => c.genres.some((cg) => g.includes(cg)))) scores[c.id] = (scores[c.id] || 0) + 1;
       });
     });
-    Object.entries(scores)
-      .filter(([, n]) => n / artists.length >= 0.4)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 2)
-      .forEach(([id]) => found.push(id));
+    const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+    const strong = ranked.filter(([, n]) => n / artists.length >= 0.4).slice(0, 2);
+    if (strong.length) {
+      strong.forEach(([id]) => found.push(id));
+    } else if (ranked.length && ranked[0][1] / artists.length >= 0.25) {
+      // Nothing dominant, but one genre still leads clearly enough to be worth naming rather
+      // than falling back to "no pattern".
+      found.push(ranked[0][0]);
+    }
   }
 
   const names = entry.sampleNames || [];
