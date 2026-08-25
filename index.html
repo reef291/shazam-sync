@@ -494,6 +494,7 @@ function loadMembershipCache() {
         snapshot: entry.snapshot,
         uris: new Set(entry.uris),
         sampleArtists: entry.sampleArtists || [],
+        sampleArtistNames: entry.sampleArtistNames || [],
         sampleNames: entry.sampleNames || [],
       });
     }
@@ -508,6 +509,7 @@ function saveMembershipCache(map) {
       snapshot: entry.snapshot,
       uris: [...entry.uris],
       sampleArtists: entry.sampleArtists || [],
+      sampleArtistNames: entry.sampleArtistNames || [],
       sampleNames: entry.sampleNames || [],
     };
   }
@@ -525,9 +527,10 @@ function saveMembershipCache(map) {
 const PATTERN_SAMPLE_SIZE = 40;
 
 async function readPlaylistContent(playlistId) {
-  const fields = encodeURIComponent("items(item(uri,name,artists(id)),track(uri,name,artists(id))),next");
+  const fields = encodeURIComponent("items(item(uri,name,artists(id,name)),track(uri,name,artists(id,name))),next");
   const uris = new Set();
   const sampleArtists = [];
+  const sampleArtistNames = [];
   const sampleNames = [];
   let url = `/playlists/${playlistId}/items?limit=100&fields=${fields}`;
   while (url) {
@@ -538,22 +541,23 @@ async function readPlaylistContent(playlistId) {
       uris.add(it.uri);
       if (sampleNames.length < PATTERN_SAMPLE_SIZE) {
         sampleNames.push(it.name || "");
-        const aid = it.artists && it.artists[0] && it.artists[0].id;
-        if (aid) sampleArtists.push(aid);
+        const first = it.artists && it.artists[0];
+        if (first && first.id) sampleArtists.push(first.id);
+        if (first && first.name) sampleArtistNames.push(first.name);
       }
     });
     url = page.next ? page.next.replace("https://api.spotify.com/v1", "") : null;
   }
-  return { uris, sampleArtists, sampleNames };
+  return { uris, sampleArtists, sampleArtistNames, sampleNames };
 }
 
 async function refreshPlaylistMembership(playlists, cache) {
   const stale = playlists.filter((p) => {
     const entry = cache.get(p.id);
     if (!entry || entry.snapshot !== p.snapshot) return true;
-    // Entries cached before sampling existed carry no sampleNames, and their snapshot still
+    // Entries cached before sampling existed carry no sample data, and their snapshot still
     // matches - so without this they'd never be re-read and content detection would see nothing.
-    return !entry.sampleNames || !entry.sampleNames.length;
+    return !entry.sampleNames || !entry.sampleNames.length || !entry.sampleArtistNames;
   });
 
   if (!stale.length) {
@@ -680,22 +684,26 @@ function detectCategoriesFromContent(entry) {
   const found = [];
 
   const artists = entry.sampleArtists || [];
-  if (artists.length >= 4) {
-    // Score each category by how many sampled artists carry one of its genres, then keep the ones
-    // covering a real share of the playlist rather than a single stray track.
+  const artistNames = entry.sampleArtistNames || [];
+  if (artists.length >= 4 || artistNames.length >= 4) {
+    // Score each category by how many sampled artists point at it - via Spotify's genre tags, or
+    // via the built-in list where those tags are too thin to distinguish Israeli genres.
     const scores = {};
+    const bump = (id) => { scores[id] = (scores[id] || 0) + 1; };
     artists.forEach((id) => {
       const genres = artistGenres[id] || [];
       PLAYLIST_CATEGORIES.forEach((c) => {
         if (!c.genres) return;
-        if (genres.some((g) => c.genres.some((cg) => g.includes(cg)))) scores[c.id] = (scores[c.id] || 0) + 1;
+        if (genres.some((g) => c.genres.some((cg) => g.includes(cg)))) bump(c.id);
       });
     });
+    artistNames.forEach((n) => artistHintCats(n).forEach(bump));
+    const sampled = Math.max(artists.length, artistNames.length);
     const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-    const strong = ranked.filter(([, n]) => n / artists.length >= 0.4).slice(0, 2);
+    const strong = ranked.filter(([, n]) => n / sampled >= 0.4).slice(0, 2);
     if (strong.length) {
       strong.forEach(([id]) => found.push(id));
-    } else if (ranked.length && ranked[0][1] / artists.length >= 0.25) {
+    } else if (ranked.length && ranked[0][1] / sampled >= 0.25) {
       // Nothing dominant, but one genre still leads clearly enough to be worth naming rather
       // than falling back to "no pattern".
       found.push(ranked[0][0]);
@@ -717,6 +725,76 @@ function detectCategoriesFromContent(entry) {
   return found;
 }
 
+// ---------- built-in artist knowledge ----------
+// Spotify's genre tags are strong for international artists but thin for Israeli ones - most get
+// little more than "israeli pop", which can't tell מזרחית from רוק ישראלי from ראפ. This seed
+// list fills that specific gap. It covers GENRE only, never language: which language bucket a
+// song belongs to is decided by the script of its title, so an Israeli artist singing in English
+// still reads as לועזי rather than being forced into a Hebrew playlist.
+const ARTIST_CATEGORY_SEED = {
+  mizrahi: [
+    "אייל גולן", "עומר אדם", "משה פרץ", "שרית חדד", "ליאור נרקיס", "דודו אהרון", "מאור אדרי",
+    "קובי פרץ", "זהר ארגוב", "חיים משה", "שרי מימון", "שירי מימון", "עדן חסון", "נסרין קדרי",
+    "מרגלית צנעני", "בניה ברבי", "אושר כהן", "איתי לוי", "שלומי סרנגה", "ליאור אלמליח",
+    "אבי ביטר", "שימי תבורי", "ג'קי מקייטן", "עופר לוי", "יהודה סעדו", "עידן רפאל חביב",
+    "שלומי שבת", "עדן בן זקן", "מאור אדרי", "פאר טסי", "רן דנקר", "עופר ניסים",
+  ],
+  rap: [
+    "הדג נחש", "סאבלימינל", "שב\"ק ס'", "טונה", "נצ'י נצ'", "רביד פלוטניק", "קפה שחור חזק",
+    "פלד", "ג'ימבו ג'יי", "לוקץ'", "שקל", "נורוז", "עדן דרסו", "אקו", "כהן@מושון",
+  ],
+  rock: [
+    "אביב גפן", "שלום חנוך", "ברי סחרוף", "רמי פורטיס", "משינה", "כוורת", "מוניקה סקס",
+    "אתניקס", "החברים של נטאשה", "כנסיית השכל", "גירפות", "מרסדס בנד", "אלגיר", "סגול 59",
+    "רוקפור", "פורטיסחרוף", "יזהר אשדות", "דני סנדרסון", "טיפקס", "אקס בויפרנד", "גזוז",
+    "שוטי הנבואה", "אינפקציה", "הביפרס",
+  ],
+  chill: [
+    "שלומי שבן", "אביתר בנאי", "מאיר בנאי", "יהודית רביץ", "מאיר אריאל", "אהוד בנאי",
+    "אסף אבידן", "עלמה זהר", "רותם ליברמן", "קרן פלס", "שלמה גרוניך", "דויד ברוזה",
+    "מירי מסיקה", "עידן רייכל", "יסמין לוי", "קורין אלאל", "נורית גלרון",
+  ],
+  oldies: [
+    "אריק איינשטיין", "שושנה דמארי", "יהורם גאון", "חוה אלברשטיין", "מתי כספי", "גידי גוב",
+    "אריק סיני", "יהודה פוליקר", "צביקה פיק", "ירדנה ארזי", "עפרה חזה", "החלונות הגבוהים",
+    "שלישיית גשר הירקון", "נעמי שמר", "אילנית", "יגאל בשן",
+  ],
+  pop: [
+    "סטטיק ובן אל", "נועה קירל", "אנה זק", "אגם בוחבוט", "מרגי", "אליעד", "עברי לידר",
+    "הראל סקעת", "רותם כהן", "ריטה", "שלמה ארצי", "דנה אינטרנשיונל", "נתן גושן",
+  ],
+};
+
+const ARTIST_HINTS = {};
+Object.entries(ARTIST_CATEGORY_SEED).forEach(([cat, list]) => {
+  list.forEach((a) => {
+    const key = a.trim().toLowerCase();
+    if (!ARTIST_HINTS[key]) ARTIST_HINTS[key] = [];
+    if (!ARTIST_HINTS[key].includes(cat)) ARTIST_HINTS[key].push(cat);
+  });
+});
+
+function artistHintCats(artist) {
+  if (!artist) return [];
+  return ARTIST_HINTS[artist.trim().toLowerCase()] || [];
+}
+
+// Words in a TRACK title that say something the artist's genre doesn't. A remix belongs at a
+// party even when the original is a ballad; an acoustic version belongs with the quiet ones.
+const TITLE_SIGNALS = [
+  { terms: ["remix", "רמיקס", "mashup", "מאשאפ", "club mix", "extended mix"], cats: ["party", "electronic"] },
+  { terms: ["acoustic", "אקוסטי", "אקוסטית", "unplugged", "piano version", "stripped"], cats: ["chill"] },
+];
+
+function titleSignalCats(song) {
+  const t = (song.name || "").toLowerCase();
+  const out = [];
+  TITLE_SIGNALS.forEach((sig) => {
+    if (sig.terms.some((term) => t.includes(term))) sig.cats.forEach((c) => { if (!out.includes(c)) out.push(c); });
+  });
+  return out;
+}
+
 // playlistMeta entries are { cats: [ids], terms: "free text" }. Older versions stored a bare
 // string, so normalize on read rather than migrating destructively.
 function getMeta(playlistId) {
@@ -733,10 +811,13 @@ function setMeta(playlistId, meta) {
 function songMatchesCategory(song, catId) {
   const cat = CATEGORY_BY_ID[catId];
   if (!cat) return false;
+  // Language is decided purely by script - never by who the artist is.
   if (cat.script && detectScript(`${song.name} ${song.artist}`) === cat.script) return true;
   if (cat.genres && song.genres && song.genres.length) {
     if (song.genres.some((g) => cat.genres.some((cg) => g.includes(cg)))) return true;
   }
+  if (artistHintCats(song.artist).includes(catId)) return true;
+  if (titleSignalCats(song).includes(catId)) return true;
   return false;
 }
 
@@ -787,6 +868,7 @@ function matchReasons(song, playlist) {
   if (matchPlaylistsByArtist(song.artist, one).length) reasons.push("שם האמן");
   const cats = getMeta(playlist.id).cats.filter((c) => songMatchesCategory(song, c));
   cats.forEach((c) => reasons.push(CATEGORY_BY_ID[c].label));
+  if (artistHintCats(song.artist).some((c) => cats.includes(c))) reasons.push("אמן מוכר");
   if (matchPlaylistsByTerms(song, one).length) reasons.push("מילה שהגדרת");
   return reasons;
 }
