@@ -245,6 +245,7 @@
   <small class="hint" id="lastLoadHint"></small>
   <small class="hint">אחרי "טען פלייליסטים" יופיעו ליד כל שיר כל הפלייליסטים שלך: <b>ירוק = השיר נמצא שם</b>. לחיצה מוסיפה או מסירה. כל הסרה מבקשת אישור, וכל פעולה נרשמת ביומן הפעילות למטה. הרשימה נשמרת מקומית, ו"רענן פלייליסטים" קורא רק את מה שהשתנה.</small>
 
+  <div id="restoreBanner"></div>
   <div id="autoAddPanel"></div>
 
   <div class="busy" id="busyRow"><div class="spinner"></div><span id="busyMsg"></span></div>
@@ -1722,7 +1723,43 @@ $("btnConnectSpotify").addEventListener("click", connectSpotify);
 $("btnLoad").addEventListener("click", loadSongs);
 $("btnScanMatches").addEventListener("click", scanForMatches);
 
+// ---------- one-off restore helper ----------
+// A PUT "replace contents" call on this API empties a playlist without writing the new list back.
+// The affected playlist's tracks were saved here beforehand; this banner retries putting them
+// back, since the immediate attempts were blocked by rate limiting. It disappears once done.
+function renderRestoreBanner() {
+  const el = $("restoreBanner");
+  const pid = localStorage.getItem("EMERGENCY_restore_pid");
+  const uris = LS.get("EMERGENCY_restore_uris", []);
+  if (!pid || !uris.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="panel" style="border-color: var(--err);">
+    <div class="panel-title" style="color: var(--err);">שחזור פלייליסט ממתין</div>
+    <div class="chips-note" style="line-height:1.6; margin-bottom:8px;">
+      ${uris.length} שירים מהפלייליסט "My playlist #17" ממתינים לשחזור. לחצו כדי לנסות שוב
+      (ניסיונות קודמים נחסמו בהגבלת קצב של Spotify).
+    </div>
+    <button id="btnRestoreNow" class="primary-big">שחזר עכשיו</button>
+  </div>`;
+  $("btnRestoreNow").addEventListener("click", async () => {
+    const btn = $("btnRestoreNow");
+    btn.disabled = true;
+    btn.textContent = "משחזר...";
+    try {
+      await spotifyApi(`/playlists/${pid}/items`, { method: "POST", body: JSON.stringify({ uris }) });
+      localStorage.removeItem("EMERGENCY_restore_pid");
+      localStorage.removeItem("EMERGENCY_restore_uris");
+      log(`שוחזרו ${uris.length} שירים לפלייליסט.`);
+      renderRestoreBanner();
+    } catch (e) {
+      log(`השחזור נכשל (${e.message}) - נסו שוב בעוד כמה דקות.`);
+      btn.disabled = false;
+      btn.textContent = "שחזר עכשיו";
+    }
+  });
+}
+
 handleSpotifyRedirect().then(() => {
+  renderRestoreBanner();
   updateSpotifyUi();
   // Cached playlist names/membership survive reloads, so the panel and chips work immediately -
   // "רענן פלייליסטים" then only re-reads what actually changed.
