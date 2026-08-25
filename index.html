@@ -143,11 +143,9 @@
   }
   .chip-cat.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
   .chip-cat.not { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); border-color: var(--err); }
-  .chip-play {
-    display: inline-flex; align-items: center; text-decoration: none;
-    color: var(--accent); border-color: var(--accent);
-  }
-  .chip-play:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .chip-play { color: var(--accent); border-color: var(--accent); }
+  .chip-play.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); border-color: var(--accent); }
+  .track-embed { border: none; border-radius: 10px; display: block; }
   .chips-note { font-size: 0.72rem; color: var(--muted); }
   .panel {
     background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
@@ -1331,11 +1329,17 @@ function renderSongList() {
       s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים"
     }</button>`;
 
-    // This API exposes no preview_url, so there is nothing to play inline - the honest option is
-    // to open the track in Spotify itself, where it plays in full.
+    // The API exposes no preview_url, and a plain open.spotify.com link demands a login before it
+    // will play anything. Spotify's embed player is the way round both: it streams a preview
+    // in-page with no sign-in, and plays the full track when the viewer is signed in.
     const trackId = trackIdFromUri(s.uri);
     const playChip = trackId
-      ? `<a class="chip chip-play" href="https://open.spotify.com/track/${esc(trackId)}" target="_blank" rel="noopener noreferrer" title="פתיחת השיר ב-Spotify להאזנה">▶ האזן</a>`
+      ? `<button class="chip chip-play${s.playing ? " on" : ""}" data-play="${i}" title="האזנה מהירה כאן בדף">${s.playing ? "✕ סגור" : "▶ האזן"}</button>`
+      : "";
+    const player = s.playing && trackId
+      ? `<iframe class="track-embed" src="https://open.spotify.com/embed/track/${esc(trackId)}?utm_source=generator"
+           width="100%" height="80" frameborder="0" loading="lazy"
+           allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe>`
       : "";
 
     let playlistChips;
@@ -1367,6 +1371,7 @@ function renderSongList() {
         </div>
         <div style="display:flex; gap:5px; flex-shrink:0;">${playChip}${likeChip}</div>
       </div>
+      ${player}
       <div class="chips">${playlistChips}</div>
     </div>`;
   }).join("") + (loadedFromEnd < totalTracks
@@ -1375,6 +1380,16 @@ function renderSongList() {
 
   renderLoadMoreButton();
 
+  el.querySelectorAll("[data-play]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.play);
+      const wasPlaying = songs[i].playing;
+      // Only one player open at a time, so opening a second doesn't leave audio running above.
+      songs.forEach((song) => { song.playing = false; });
+      songs[i].playing = !wasPlaying;
+      renderSongList();
+    });
+  });
   el.querySelectorAll("[data-like]").forEach((btn) => {
     btn.addEventListener("click", () => toggleLiked(Number(btn.dataset.like), btn));
   });
