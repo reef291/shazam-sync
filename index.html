@@ -1739,22 +1739,48 @@ function renderRestoreBanner() {
       (ניסיונות קודמים נחסמו בהגבלת קצב של Spotify).
     </div>
     <button id="btnRestoreNow" class="primary-big">שחזר עכשיו</button>
+    <div id="restoreStatus" class="chips-note" style="margin-top:8px;"></div>
   </div>`;
+
+  const status = (msg, isError) => {
+    const s = $("restoreStatus");
+    s.textContent = msg;
+    s.style.color = isError ? "var(--err)" : "var(--accent2)";
+  };
+
   $("btnRestoreNow").addEventListener("click", async () => {
     const btn = $("btnRestoreNow");
     btn.disabled = true;
     btn.textContent = "משחזר...";
+    status("שולח בקשה ל-Spotify...", false);
     try {
-      await spotifyApi(`/playlists/${pid}/items`, { method: "POST", body: JSON.stringify({ uris }) });
-      localStorage.removeItem("EMERGENCY_restore_pid");
-      localStorage.removeItem("EMERGENCY_restore_uris");
-      log(`שוחזרו ${uris.length} שירים לפלייליסט.`);
-      renderRestoreBanner();
+      // Deliberately bypasses spotifyApi's silent 429 retry loop so the outcome is always
+      // reported here instead of disappearing into the collapsed activity log.
+      const token = await getSpotifyAccessToken();
+      const resp = await fetch(`https://api.spotify.com/v1/playlists/${pid}/items`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({ uris }),
+      });
+      if (resp.status === 429) {
+        const wait = Number(resp.headers.get("Retry-After"));
+        status(wait
+          ? `Spotify עדיין מגביל את הקצב. נסו שוב בעוד ${Math.ceil(wait / 60)} דקות.`
+          : "Spotify עדיין מגביל את הקצב (429). נסו שוב בעוד כ-15 דקות.", true);
+      } else if (!resp.ok) {
+        status(`השחזור נכשל (שגיאה ${resp.status}). נסו שוב מאוחר יותר.`, true);
+      } else {
+        localStorage.removeItem("EMERGENCY_restore_pid");
+        localStorage.removeItem("EMERGENCY_restore_uris");
+        log(`שוחזרו ${uris.length} שירים לפלייליסט.`);
+        renderRestoreBanner();
+        return;
+      }
     } catch (e) {
-      log(`השחזור נכשל (${e.message}) - נסו שוב בעוד כמה דקות.`);
-      btn.disabled = false;
-      btn.textContent = "שחזר עכשיו";
+      status(`השחזור נכשל: ${e.message}`, true);
     }
+    btn.disabled = false;
+    btn.textContent = "שחזר עכשיו";
   });
 }
 
