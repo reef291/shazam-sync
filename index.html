@@ -143,6 +143,11 @@
   }
   .chip-cat.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
   .chip-cat.not { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); border-color: var(--err); }
+  .chip-play {
+    display: inline-flex; align-items: center; text-decoration: none;
+    color: var(--accent); border-color: var(--accent);
+  }
+  .chip-play:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .chips-note { font-size: 0.72rem; color: var(--muted); }
   .panel {
     background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
@@ -460,17 +465,32 @@ async function enrichWithGenres(songList) {
   songList.forEach((s) => { s.genres = (s.artistId && artistGenres[s.artistId]) || []; });
 }
 
-// Every other write in this app goes to /playlists/{id}/items, matching the /me/library naming
-// this API surface uses. Removal was the one place still calling the older /tracks resource, which
-// failed and left the UI showing songs as still-present. Try items first, fall back to tracks so
-// it works on either surface, and let the caller see a real error if both fail.
-async function removeTracksFromPlaylist(playlistId, tracks) {
-  const body = JSON.stringify({ tracks });
+// Removing tracks from a playlist is NOT supported by this API. Probing every documented shape -
+// ?uris= query, {uris:[...]} body, {tracks:[{uri}]} body, and the older /tracks path - returns
+// 400 "No uris provided" (or 403 on /tracks), while the very same conventions work fine for
+// adding and for Liked Songs. The request never reaches a track lookup, so it's a missing
+// handler, not a bad payload. We still attempt it, in case that changes, but a failure flips a
+// flag so the UI stops offering an action that cannot work.
+let playlistRemovalUnsupported = false;
+
+async function removeTracksFromPlaylist(playlistId, uris) {
+  const list = uris.map((u) => (typeof u === "string" ? u : u.uri));
   try {
-    return await spotifyApi(`/playlists/${playlistId}/items`, { method: "DELETE", body });
+    return await spotifyApi(`/playlists/${playlistId}/items?uris=${encodeURIComponent(list.join(","))}`, { method: "DELETE" });
   } catch (e) {
-    return await spotifyApi(`/playlists/${playlistId}/tracks`, { method: "DELETE", body });
+    if (!playlistRemovalUnsupported) {
+      playlistRemovalUnsupported = true;
+      log("שים לב: ה-API של Spotify כאן לא תומך בהסרת שירים מפלייליסט (הוספה כן עובדת, וגם הסרה מ-Liked Songs). אפשרויות ההסרה מפלייליסט הושבתו.");
+      renderSongList();
+      renderAutoAddPanel();
+    }
+    throw e;
   }
+}
+
+function trackIdFromUri(uri) {
+  const parts = String(uri || "").split(":");
+  return parts.length === 3 ? parts[2] : null;
 }
 
 // Batched "is this saved to Liked Songs" check - avoids downloading the entire liked library.
@@ -1054,7 +1074,9 @@ function renderAutoAddPanel() {
                   <input type="text" class="pl-desc" data-desc="${esc(p.id)}" value="${esc(meta.terms)}"
                     placeholder="מילים משלך, מופרדות בפסיק - למשל: כוורת, שלמה ארצי" />
                   <div style="margin-top:6px;">
-                    ${inCount ? `<button class="chip" data-bulkremove="${esc(p.id)}">הסר את ${inCount} השירים הטעונים מהפלייליסט</button>` : `<span class="chips-note">אף אחד מהשירים הטעונים לא נמצא כאן</span>`}
+                    ${inCount && !playlistRemovalUnsupported
+                      ? `<button class="chip" data-bulkremove="${esc(p.id)}">הסר את ${inCount} השירים הטעונים מהפלייליסט</button>`
+                      : `<span class="chips-note">${inCount ? `${inCount} מהשירים הטעונים כבר כאן` : "אף אחד מהשירים הטעונים לא נמצא כאן"}</span>`}
                   </div>
                 </div>` : ""}
             </div>`;
@@ -1068,11 +1090,15 @@ function renderAutoAddPanel() {
       <div class="preview-box" id="previewBox"></div>
       <div>
         <button id="btnRunAutoAdd" class="primary-big">בצע הוספה</button>
-        ${lastRunAdds.length ? `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>` : ""}
-        <button id="btnClearAll" class="secondary">נקה את השירים המוצגים מכל הפלייליסטים</button>
-        ${lastClearRemovals.length ? `<button id="btnUndoClear" class="secondary">בטל ניקוי (${lastClearRemovals.length})</button>` : ""}
+        ${playlistRemovalUnsupported ? "" : `
+          ${lastRunAdds.length ? `<button id="btnUndoAutoAdd" class="secondary">בטל את ההוספה האחרונה (${lastRunAdds.length})</button>` : ""}
+          <button id="btnClearAll" class="secondary">נקה את השירים המוצגים מכל הפלייליסטים</button>
+          ${lastClearRemovals.length ? `<button id="btnUndoClear" class="secondary">בטל ניקוי (${lastClearRemovals.length})</button>` : ""}`}
         <button id="btnSaveSettings" class="secondary">שמור ועדכן רשימה</button>
       </div>
+      ${playlistRemovalUnsupported ? `<div class="chips-note" style="margin-top:8px; color:var(--err);">
+        ה-API לא תומך בהסרת שירים מפלייליסט, ולכן פעולות ההסרה הוסתרו. הוספה ל-Liked Songs והסרה ממנו כן עובדות.
+      </div>` : ""}
     </div>`;
 
   const listEl = el.querySelector(".pl-list");
@@ -1140,7 +1166,8 @@ function renderAutoAddPanel() {
   });
   $("alsoLikeCheckbox").addEventListener("change", (e) => { alsoLikeChecked = e.target.checked; });
   $("btnRunAutoAdd").addEventListener("click", confirmAndRunAutoAdd);
-  $("btnClearAll").addEventListener("click", clearDisplayedFromAllPlaylists);
+  const clearBtn = $("btnClearAll");
+  if (clearBtn) clearBtn.addEventListener("click", clearDisplayedFromAllPlaylists);
   const undoClearBtn = $("btnUndoClear");
   if (undoClearBtn) undoClearBtn.addEventListener("click", undoLastClear);
   $("btnSaveSettings").addEventListener("click", () => {
@@ -1172,7 +1199,7 @@ async function bulkRemoveFromPlaylist(playlistId) {
   try {
     for (let i = 0; i < uris.length; i += 100) {
       const batch = uris.slice(i, i + 100);
-      await removeTracksFromPlaylist(playlistId, batch.map((uri) => ({ uri })));
+      await removeTracksFromPlaylist(playlistId, batch);
       batch.forEach((uri) => { set.delete(uri); forgetAutoAdd(uri, playlistId); });
     }
     log(`הוסרו ${uris.length} שירים מ"${p.name}".`);
@@ -1207,7 +1234,7 @@ async function clearDisplayedFromAllPlaylists() {
     try {
       for (let i = 0; i < job.uris.length; i += 100) {
         const batch = job.uris.slice(i, i + 100);
-        await removeTracksFromPlaylist(job.playlist.id, batch.map((uri) => ({ uri })));
+        await removeTracksFromPlaylist(job.playlist.id, batch);
         batch.forEach((uri) => {
           set.delete(uri);
           forgetAutoAdd(uri, job.playlist.id);
@@ -1276,7 +1303,7 @@ async function undoLastAutoAddRun() {
   const sorted = [...toUndo].sort((a, b) => b.position - a.position);
   for (const entry of sorted) {
     try {
-      await removeTracksFromPlaylist(entry.playlistId, [{ uri: entry.uri, positions: [entry.position] }]);
+      await removeTracksFromPlaylist(entry.playlistId, [entry.uri]);
       forgetAutoAdd(entry.uri, entry.playlistId);
       const undoSet = playlistUriSet(entry.playlistId);
       if (undoSet) undoSet.delete(entry.uri);
@@ -1304,6 +1331,13 @@ function renderSongList() {
       s.inLiked ? "♥ אהוב" : "♡ הוסף לאהובים"
     }</button>`;
 
+    // This API exposes no preview_url, so there is nothing to play inline - the honest option is
+    // to open the track in Spotify itself, where it plays in full.
+    const trackId = trackIdFromUri(s.uri);
+    const playChip = trackId
+      ? `<a class="chip chip-play" href="https://open.spotify.com/track/${esc(trackId)}" target="_blank" rel="noopener noreferrer" title="פתיחת השיר ב-Spotify להאזנה">▶ האזן</a>`
+      : "";
+
     let playlistChips;
     if (!hasMembershipData()) {
       playlistChips = `<span class="chips-note">לחצו "טען פלייליסטים" כדי לנהל שיוך לפלייליסטים.</span>`;
@@ -1315,7 +1349,10 @@ function renderSongList() {
         ? visible.map((p) => {
             const set = playlistUriSet(p.id);
             const inIt = !!set && set.has(s.uri);
-            return `<button class="chip${inIt ? " on" : ""}" data-idx="${i}" data-pid="${esc(p.id)}" title="${
+            // A green chip is only clickable while removal is actually possible.
+            const locked = inIt && playlistRemovalUnsupported;
+            return `<button class="chip${inIt ? " on" : ""}" data-idx="${i}" data-pid="${esc(p.id)}" ${locked ? "disabled" : ""} title="${
+              locked ? `כבר ב-${esc(p.name)} - הסרה לא נתמכת ב-API` :
               inIt ? `לחצו כדי להסיר מ-${esc(p.name)}` : `לחצו כדי להוסיף ל-${esc(p.name)}`
             }">${(inIt ? "✓ " : "+ ") + esc(p.name)}</button>`;
           }).join("")
@@ -1328,7 +1365,7 @@ function renderSongList() {
           <div class="song-note">🎵</div>
           <div class="song-text"><span class="track-name">${esc(s.name)}</span><span class="track-artist">${esc(s.artist)}</span></div>
         </div>
-        ${likeChip}
+        <div style="display:flex; gap:5px; flex-shrink:0;">${playChip}${likeChip}</div>
       </div>
       <div class="chips">${playlistChips}</div>
     </div>`;
@@ -1406,7 +1443,7 @@ async function togglePlaylistMembership(idx, playlistId, btn) {
   btn.style.opacity = "0.55";
   try {
     if (removing) {
-      await removeTracksFromPlaylist(playlistId, [{ uri: s.uri }]);
+      await removeTracksFromPlaylist(playlistId, [s.uri]);
       set.delete(s.uri);
       forgetAutoAdd(s.uri, playlistId); // keep the auto-add bookkeeping honest about what's there
       log(`הוסר "${s.name}" מהפלייליסט "${p.name}".`);
